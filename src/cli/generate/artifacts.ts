@@ -16,6 +16,9 @@ const packageRoot = fileURLToPath(new URL('../../..', import.meta.url));
 // that often lack node_modules. Pre-resolve those deps to this package so bundling works
 // even in empty temp dirs (fixes #1).
 const BUNDLED_DEPENDENCIES = ['commander', 'mcporter', 'jsonc-parser'] as const;
+// The keychain backend's native module cannot be bundled. Generated CLIs always use the file
+// vault, so it is marked external and never loaded inside a generated bundle.
+const KEYRING_EXTERNAL_ID = '@napi-rs/keyring';
 const dependencyAliasPlugin = createLocalDependencyAliasPlugin([...BUNDLED_DEPENDENCIES]);
 const NODE_BUILTIN_SPECIFIERS = new Set(builtinModules.flatMap((specifier) => [specifier, `node:${specifier}`]));
 
@@ -68,6 +71,7 @@ async function bundleWithRolldown({
     input: sourcePath,
     treeshake: false,
     plugins,
+    external: [KEYRING_EXTERNAL_ID],
     onLog(level, log, handler) {
       if (typeof (log as { code?: string }).code === 'string' && (log as { code?: string }).code === 'EVAL') {
         return;
@@ -142,6 +146,7 @@ async function bundleWithBun({
   await ensureBundlerDeps(stagingDir);
   try {
     const args = ['build', stagingEntry, '--outfile', absTarget, '--target', runtimeKind === 'bun' ? 'bun' : 'node'];
+    args.push('--external', KEYRING_EXTERNAL_ID);
     if (minify) {
       args.push('--minify');
     }
