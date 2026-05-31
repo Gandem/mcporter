@@ -74,7 +74,7 @@ export function renderTemplate({
     "import { fileURLToPath } from 'node:url';",
     "import { Command, Option } from 'commander';",
     "import { createGeneratedKeepAliveRuntime, createRuntime, createServerProxy, handleDaemonCli } from 'mcporter';",
-    "import { createCallResult } from 'mcporter';",
+    "import { createCallResult, forceFileVaultBackend } from 'mcporter';",
   ].join('\n');
   const embedded = stableJsonStringify(
     JSON.parse(JSON.stringify(definition, (_key, value) => (value instanceof URL ? value.toString() : value))),
@@ -119,6 +119,9 @@ export function renderTemplate({
   return `#!/usr/bin/env ${runtimeKind === 'bun' ? 'bun' : 'node'}
 ${generatedHeaderComment}
 ${imports}
+
+// Generated CLIs cannot bundle the native keychain module, so they always use the file vault.
+forceFileVaultBackend();
 
 const __mcpScriptDir = path.dirname(fileURLToPath(import.meta.url));
 const __mcpRelativeStdioCwd: string | null = ${JSON.stringify(relativeStdioCwd)};

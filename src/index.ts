@@ -53,3 +53,4 @@ export type { DaemonCliOptions } from './cli/daemon-command.js';
 export { handleDaemonCli } from './cli/daemon-command.js';
 export type { ServerProxy, ServerProxyOptions, ToolCallOptions } from './server-proxy.js';
 export { createServerProxy } from './server-proxy.js';
+export { forceFileVaultBackend } from './oauth-vault.js';
