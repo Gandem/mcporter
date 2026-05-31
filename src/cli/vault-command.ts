@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import type { OAuthClientInformationMixed, OAuthTokens } from '@modelcontextprotocol/client';
 import type { Runtime } from '../runtime.js';
 import { prepareStoredTokens } from '../oauth-persistence-stores.js';
-import { clearVaultEntry, getOAuthVaultPath, saveVaultEntry } from '../oauth-vault.js';
+import { clearVaultEntry, describeOAuthVault, saveVaultEntry } from '../oauth-vault.js';
 import { CliUsageError } from './errors.js';
 
 interface VaultPayload {
@@ -52,7 +52,7 @@ async function handleVaultSet(
     tokens: prepareStoredTokens(payload.tokens),
     ...(payload.clientInfo ? { clientInfo: payload.clientInfo } : {}),
   });
-  console.log(`Saved OAuth credentials for '${definition.name}' to ${getOAuthVaultPath()}`);
+  console.log(`Saved OAuth credentials for '${definition.name}' to ${describeOAuthVault()}`);
 }
 
 async function handleVaultClear(runtime: Pick<Runtime, 'getDefinition'>, args: string[]): Promise<void> {

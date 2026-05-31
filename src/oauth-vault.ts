@@ -17,6 +17,21 @@ import {
 import { mcporterDir } from './paths.js';
 
 type VaultKey = string;
+type VaultBackend = 'file' | 'keychain';
+
+const KEYCHAIN_SERVICE = 'mcporter';
+const KEYCHAIN_ACCOUNT_PREFIX = 'oauth-vault';
+const KEYCHAIN_NAMESPACE_HASH_LENGTH = 16;
+const KEYRING_PACKAGE = '@napi-rs/keyring';
+
+interface KeyringEntry {
+  getPassword(): string | null;
+  setPassword(password: string): void;
+}
+
+interface KeyringModule {
+  Entry: new (service: string, account: string) => KeyringEntry;
+}
 
 export interface VaultEntry {
   serverName: string;
@@ -58,17 +73,68 @@ export function getOAuthVaultPath(): string {
   return path.join(mcporterDir('data'), 'credentials.json');
 }
 
+const CREDENTIAL_BACKEND_ENV_VARS = [
+  'MCPORTER_CREDENTIAL_BACKEND',
+  'MCPORTER_OAUTH_VAULT_BACKEND',
+  'MCPORTER_VAULT_BACKEND',
+] as const;
+
+function requestedBackendValue(env: NodeJS.ProcessEnv): string | undefined {
+  return CREDENTIAL_BACKEND_ENV_VARS.map((name) => env[name]).find(
+    (value): value is string => typeof value === 'string' && value.trim().length > 0
+  );
+}
+
+export function resolveOAuthVaultBackend(env: NodeJS.ProcessEnv = process.env): VaultBackend {
+  const raw = requestedBackendValue(env);
+  if (!raw) {
+    return 'file';
+  }
+  const normalized = raw.trim().toLowerCase();
+  if (normalized === 'file' || normalized === 'keychain') {
+    return normalized;
+  }
+  throw new Error(`Unsupported mcporter credential backend '${raw}'. Expected 'file' or 'keychain'.`);
+}
+
+/**
+ * Generated CLIs cannot bundle the native keychain module, so they always use the file vault.
+ * Call this once at startup, before any vault operation runs, to neutralize a requested keychain
+ * backend (warning if one was requested). Backend resolution is lazy, so setting the env here
+ * is sufficient.
+ */
+export function forceFileVaultBackend(env: NodeJS.ProcessEnv = process.env): void {
+  const requested = requestedBackendValue(env);
+  if (requested && requested.trim().toLowerCase() === 'keychain') {
+    console.error(
+      'mcporter: the keychain credential backend is not available in generated CLIs; using the file vault instead.'
+    );
+  }
+  env.MCPORTER_CREDENTIAL_BACKEND = 'file';
+  delete env.MCPORTER_OAUTH_VAULT_BACKEND;
+  delete env.MCPORTER_VAULT_BACKEND;
+}
+
+export function describeOAuthVault(): string {
+  if (resolveOAuthVaultBackend() === 'keychain') {
+    return `${KEYCHAIN_SERVICE}/${keychainAccount()} (macOS Keychain)`;
+  }
+  return `${getOAuthVaultPath()} (vault)`;
+}
+
+function getOAuthVaultLockTargetPath(): string {
+  if (resolveOAuthVaultBackend() === 'keychain') {
+    return path.join(path.dirname(getOAuthVaultPath()), 'locks', keychainAccount());
+  }
+  return getOAuthVaultPath();
+}
+
 async function readVaultState(): Promise<VaultReadState> {
   try {
-    const existing = await readJsonFile<VaultFile>(getOAuthVaultPath());
-    if (
-      existing &&
-      (existing.version === 1 || existing.version === 2) &&
-      existing.entries &&
-      typeof existing.entries === 'object'
-    ) {
+    const existing = await readStoredVault();
+    if (isVaultFile(existing)) {
       return {
-        vault: { ...existing, version: 2 } as VaultFile,
+        vault: { ...existing, version: 2 },
         needsRepair: existing.version !== 2,
       };
     }
@@ -92,8 +158,93 @@ function emptyVault(): VaultFile {
   return { version: 2, entries: {} };
 }
 
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function isVaultFile(value: unknown): value is VaultFile {
+  return isPlainRecord(value) && (value.version === 1 || value.version === 2) && isPlainRecord(value.entries);
+}
+
+async function readStoredVault(): Promise<unknown> {
+  if (resolveOAuthVaultBackend() === 'keychain') {
+    const raw = await readKeychainVault();
+    return raw === undefined ? undefined : JSON.parse(raw);
+  }
+  return readJsonFile(getOAuthVaultPath());
+}
+
 async function writeVault(contents: VaultFile): Promise<void> {
+  if (resolveOAuthVaultBackend() === 'keychain') {
+    await writeKeychainVault(JSON.stringify(contents, null, 2));
+    return;
+  }
   await writeJsonFile(getOAuthVaultPath(), contents);
+}
+
+function keychainAccount(): string {
+  const namespace = crypto
+    .createHash('sha256')
+    .update(getOAuthVaultPath())
+    .digest('hex')
+    .slice(0, KEYCHAIN_NAMESPACE_HASH_LENGTH);
+  return `${KEYCHAIN_ACCOUNT_PREFIX}-${namespace}`;
+}
+
+function assertMacOSKeychainBackend(): void {
+  if (process.platform !== 'darwin') {
+    throw new Error(
+      `Keychain credential backend currently supports macOS only. Set MCPORTER_CREDENTIAL_BACKEND=file to use the file vault on ${process.platform}.`
+    );
+  }
+}
+
+let keyringModulePromise: Promise<KeyringModule> | undefined;
+
+async function loadKeyring(): Promise<KeyringModule> {
+  if (keyringModulePromise === undefined) {
+    keyringModulePromise = (async () => {
+      try {
+        return (await import('@napi-rs/keyring')) as unknown as KeyringModule;
+      } catch (error) {
+        keyringModulePromise = undefined;
+        throw new Error(
+          `The keychain credential backend requires the optional '${KEYRING_PACKAGE}' native module, which could not be loaded. Reinstall mcporter so its prebuilt binary is available, or set MCPORTER_CREDENTIAL_BACKEND=file.`,
+          { cause: error }
+        );
+      }
+    })();
+  }
+  return keyringModulePromise;
+}
+
+function keychainEntry(EntryCtor: KeyringModule['Entry']): KeyringEntry {
+  return new EntryCtor(KEYCHAIN_SERVICE, keychainAccount());
+}
+
+async function readKeychainVault(): Promise<string | undefined> {
+  assertMacOSKeychainBackend();
+  const { Entry } = await loadKeyring();
+  let stored: string | null;
+  try {
+    stored = keychainEntry(Entry).getPassword();
+  } catch (error) {
+    throw new Error('Failed to read the mcporter OAuth vault from the macOS Keychain.', { cause: error });
+  }
+  if (!stored) {
+    return undefined;
+  }
+  return stored;
+}
+
+async function writeKeychainVault(value: string): Promise<void> {
+  assertMacOSKeychainBackend();
+  const { Entry } = await loadKeyring();
+  try {
+    keychainEntry(Entry).setPassword(value);
+  } catch (error) {
+    throw new Error('Failed to write the mcporter OAuth vault to the macOS Keychain.', { cause: error });
+  }
 }
 
 export function vaultKeyForDefinition(definition: ServerDefinition): VaultKey {
@@ -117,7 +268,7 @@ export async function reconcileVaultServerUrl(definition: ServerDefinition): Pro
     return;
   }
   const serverUrl = definition.command.url.toString();
-  await withFileLock(getOAuthVaultPath(), async () => {
+  await withFileLock(getOAuthVaultLockTargetPath(), async () => {
     const { vault, needsRepair } = await readVaultState();
     const serverUrls = stringRecord(vault.serverUrls);
     const previousUrl = serverUrls[definition.name];
@@ -325,7 +476,7 @@ function clientIdFromEntry(entry: VaultEntry | undefined): string | undefined {
 }
 
 export async function saveVaultEntry(definition: ServerDefinition, patch: Partial<VaultEntry>): Promise<void> {
-  await withFileLock(getOAuthVaultPath(), async () => {
+  await withFileLock(getOAuthVaultLockTargetPath(), async () => {
     const vault = await readVault();
     const key = vaultKeyForDefinition(definition);
     const existing = isVaultEntry(vault.entries[key]) ? vault.entries[key] : undefined;
@@ -370,7 +521,7 @@ export async function clearVaultTokensIfMatching(
   clientSnapshots?: ReadonlyMap<string, OAuthClientInformationMixed>
 ): Promise<void> {
   const key = vaultKeyForDefinition(definition);
-  await withFileLock(getOAuthVaultPath(), async () => {
+  await withFileLock(getOAuthVaultLockTargetPath(), async () => {
     const { vault, needsRepair } = await readVaultState();
     const exact = isVaultEntry(vault.entries[key]) ? vault.entries[key] : undefined;
     const fallbackKeys = findSameUrlCredentials(vault, definition, key, exact).sourceKeys;
@@ -415,7 +566,7 @@ export async function clearVaultEntry(
   scope: 'all' | 'tokens' | 'client' | 'verifier' | 'state' | 'discovery'
 ): Promise<void> {
   const key = vaultKeyForDefinition(definition);
-  await withFileLock(getOAuthVaultPath(), async () => {
+  await withFileLock(getOAuthVaultLockTargetPath(), async () => {
     const { vault, needsRepair } = await readVaultState();
     const existing = isVaultEntry(vault.entries[key]) ? vault.entries[key] : undefined;
     const fallback = findSameUrlCredentials(vault, definition, key, existing);

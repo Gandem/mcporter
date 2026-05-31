@@ -1,0 +1,290 @@
+name: Upstream sync
+
+# Weekly watchdog for this fork's patch on top of openclaw/mcporter.
+#
+#   clean rebase + green gate -> force-push main (fully automatic)
+#   pnpm-lock.yaml-only rebase conflict -> keep the rebased base, regenerate
+#     the lockfile with pnpm install, then continue automatically
+#   other rebase conflict OR red gate -> open a deduped issue and fail the run
+#
+# main is rewritten on every successful sync, so the fork stays a clean patch
+# replayed on top of upstream. Anyone with a local clone must reset after a sync.
+# Note: a push made by GITHUB_TOKEN does NOT re-trigger ci.yml, and the gate below is a
+# SUBSET of ci.yml (ubuntu-only; no docs:site, pack, or macOS/Windows matrix). A PAT-backed
+# UPSTREAM_SYNC_TOKEN push can trigger follow-up workflows.
+# If the rebased commit updates .github/workflows/*, set UPSTREAM_SYNC_TOKEN to a token with
+# Contents: write and Workflows: write. The optional token is used only for the final
+# adoption push after the gate passes.
+
+on:
+  schedule:
+    - cron: '0 6 * * 1' # Mondays 06:00 UTC
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Run even if main already contains upstream/main'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: https://github.com/openclaw/mcporter.git
+  UPSTREAM_BRANCH: main
+  ISSUE_LABEL: upstream-sync
+
+jobs:
+  sync:
+    name: Rebase patch onto upstream and adopt if green
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout fork (full history)
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Configure git identity
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream "$UPSTREAM_REPO" 2>/dev/null || git remote set-url upstream "$UPSTREAM_REPO"
+          git fetch --no-tags upstream "$UPSTREAM_BRANCH"
+
+      - name: Determine whether a sync is needed
+        id: need
+        run: |
+          if [ "${{ github.event.inputs.force }}" = "true" ]; then
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+          elif git merge-base --is-ancestor "upstream/$UPSTREAM_BRANCH" HEAD; then
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::main already contains upstream/$UPSTREAM_BRANCH; nothing to do."
+          else
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Rebase patch onto upstream
+        if: steps.need.outputs.needed == 'true'
+        id: rebase
+        run: |
+          echo "upstream_sha=$(git rev-parse --short "upstream/$UPSTREAM_BRANCH")" >> "$GITHUB_OUTPUT"
+
+          if git rebase "upstream/$UPSTREAM_BRANCH"; then
+            rebase_status=0
+          else
+            rebase_status=$?
+          fi
+
+          while [ "$rebase_status" -ne 0 ]; do
+            conflicts="$(git diff --name-only --diff-filter=U 2>/dev/null || true)"
+            printf '%s\n' "$conflicts" > /tmp/conflicts.txt
+
+            if [ "$conflicts" != "pnpm-lock.yaml" ]; then
+              git rebase --abort || true
+              echo "result=conflict" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            echo "::notice::Auto-resolving pnpm-lock.yaml rebase conflict; pnpm install will regenerate it after the rebase."
+            # During a rebase, --ours is the already-rebased side (upstream plus
+            # any earlier replayed patch commits). Keep that side for the
+            # generated lockfile and let the green-gate pnpm install reconcile it
+            # from the final package manifests.
+            if ! git checkout --ours -- pnpm-lock.yaml || ! git add pnpm-lock.yaml; then
+              git rebase --abort || true
+              echo "result=conflict" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            if git diff --cached --quiet && git diff --quiet; then
+              echo "::notice::Auto-resolved lockfile-only commit became empty; skipping it."
+              if git rebase --skip; then
+                rebase_status=0
+              else
+                rebase_status=$?
+              fi
+            else
+              if GIT_EDITOR=true git rebase --continue; then
+                rebase_status=0
+              else
+                rebase_status=$?
+              fi
+            fi
+          done
+
+          echo "result=rebased" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Setup Node
+        if: steps.rebase.outputs.result == 'rebased'
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Activate pnpm
+        if: steps.rebase.outputs.result == 'rebased'
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.33.2 --activate
+
+      - name: Reconcile lockfile and run the green gate
+        if: steps.rebase.outputs.result == 'rebased'
+        id: gate
+        env:
+          FIRECRAWL_API_KEY: test
+          LINEAR_API_KEY: test
+        run: |
+          set +e
+          (
+            set -e
+            pnpm install --no-frozen-lockfile
+            # Fold lockfile drift from reconciliation into the top patch commit
+            # when one remains, so main stays consistent without a separate
+            # generated-drift commit.
+            if ! git diff --quiet -- pnpm-lock.yaml; then
+              git add pnpm-lock.yaml
+              if [ "$(git rev-list --count "upstream/$UPSTREAM_BRANCH"..HEAD)" -ge 1 ]; then
+                git commit --amend --no-edit
+              else
+                git commit -m "chore: reconcile pnpm-lock.yaml after upstream rebase"
+              fi
+            fi
+            pnpm check
+            pnpm generate:schema
+            pnpm exec oxfmt mcporter.schema.json
+            git diff --exit-code -- mcporter.schema.json
+            pnpm test
+          ) 2>&1 | tee /tmp/gate.log
+          code=${PIPESTATUS[0]}
+          if [ "$code" -eq 0 ]; then
+            echo "result=green" >> "$GITHUB_OUTPUT"
+          else
+            echo "result=red" >> "$GITHUB_OUTPUT"
+          fi
+          exit 0
+
+      - name: Adopt — force-push main
+        if: steps.gate.outputs.result == 'green'
+        id: adopt
+        continue-on-error: true
+        env:
+          ADOPT_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
+        run: |
+          set +e
+          set -o pipefail
+          echo "::add-mask::$ADOPT_TOKEN"
+
+          ASKPASS="$(mktemp)"
+          cleanup() {
+            rm -f "$ASKPASS"
+          }
+          trap cleanup EXIT
+
+          cat > "$ASKPASS" <<'EOF'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' "x-access-token" ;;
+            *Password*) printf '%s\n' "$ADOPT_TOKEN" ;;
+          esac
+          EOF
+          chmod 700 "$ASKPASS"
+
+          GIT_ASKPASS="$ASKPASS" \
+          GIT_TERMINAL_PROMPT=0 \
+            git push --force-with-lease=refs/heads/main:${{ github.sha }} \
+              https://github.com/${{ github.repository }}.git \
+              HEAD:refs/heads/main 2>&1 | tee /tmp/adopt.log
+          code=${PIPESTATUS[0]}
+          if [ "$code" -eq 0 ]; then
+            echo "::notice::main rewritten onto upstream/${{ steps.rebase.outputs.upstream_sha }} and force-pushed."
+          fi
+          exit "$code"
+
+      - name: Open or update the attention issue
+        if: steps.rebase.outputs.result == 'conflict' || steps.gate.outputs.result == 'red' || steps.adopt.outcome == 'failure'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const conflict = '${{ steps.rebase.outputs.result }}' === 'conflict';
+            const pushFailed = '${{ steps.adopt.outcome }}' === 'failure';
+            const reason = conflict ? 'rebase conflict' : pushFailed ? 'force-push to main failed' : 'green gate failed';
+            const upstreamSha = '${{ steps.rebase.outputs.upstream_sha }}';
+            const label = process.env.ISSUE_LABEL;
+            const marker = '<!-- upstream-sync-bot -->';
+
+            let details;
+            if (conflict) {
+              const c = fs.existsSync('/tmp/conflicts.txt') ? fs.readFileSync('/tmp/conflicts.txt', 'utf8').trim() : '';
+              details = c ? '**Conflicting files:**\n```\n' + c + '\n```' : '_Conflict file list unavailable._';
+            } else if (pushFailed) {
+              const log = fs.existsSync('/tmp/adopt.log') ? fs.readFileSync('/tmp/adopt.log', 'utf8') : '';
+              const workflowPermissionHint = log.includes('without `workflows` permission')
+                ? '\n\nHint: set `UPSTREAM_SYNC_TOKEN` to a token with Contents: write and Workflows: write, then re-run the workflow.'
+                : '';
+              details =
+                'The rebase and gate passed, but the workflow adoption push was rejected ' +
+                '(lease lost to a concurrent push, branch protection forbids force-push, or the token lacks workflow-file permissions).' +
+                workflowPermissionHint +
+                '\n\nRaw adoption push output is intentionally not copied into this issue to avoid reposting credentials; inspect the workflow log for the push details.';
+            } else {
+              const log = fs.existsSync('/tmp/gate.log') ? fs.readFileSync('/tmp/gate.log', 'utf8') : '';
+              const tail = log.split('\n').slice(-150).join('\n');
+              details = '**Gate output (tail):**\n```\n' + tail + '\n```';
+            }
+
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = [
+              marker,
+              `Weekly upstream sync onto \`upstream/main@${upstreamSha}\` could not complete automatically.`,
+              ``,
+              `**Reason:** ${reason}`,
+              ``,
+              details,
+              ``,
+              `---`,
+              `Resolve locally (rerere makes repeat hunks one-time):`,
+              '```bash',
+              `git fetch upstream && git checkout main`,
+              `git rebase upstream/main   # resolve conflicts / fix the gate`,
+              `git push --force-with-lease`,
+              '```',
+              `_Workflow run: ${runUrl}_`,
+            ].join('\n');
+
+            try {
+              await github.rest.issues.getLabel({ ...context.repo, name: label });
+            } catch {
+              await github.rest.issues.createLabel({ ...context.repo, name: label, color: 'b60205', description: 'Automated upstream sync needs attention' });
+            }
+
+            const open = await github.paginate(github.rest.issues.listForRepo, {
+              ...context.repo, state: 'open', labels: label, per_page: 50,
+            });
+            const existing = open.find((i) => !i.pull_request);
+            if (existing) {
+              await github.rest.issues.createComment({ ...context.repo, issue_number: existing.number, body });
+              core.notice(`Updated existing issue #${existing.number}`);
+            } else {
+              const created = await github.rest.issues.create({
+                ...context.repo, title: `Upstream sync needs attention: ${reason}`, body, labels: [label],
+              });
+              core.notice(`Opened issue #${created.data.number}`);
+            }
+
+      - name: Fail the run on conflict, red gate, or push failure
+        if: steps.rebase.outputs.result == 'conflict' || steps.gate.outputs.result == 'red' || steps.adopt.outcome == 'failure'
+        run: |
+          echo "Upstream sync did not complete (rebase='${{ steps.rebase.outputs.result }}' gate='${{ steps.gate.outputs.result }}' adopt='${{ steps.adopt.outcome }}'); see the issue above."
+          exit 1

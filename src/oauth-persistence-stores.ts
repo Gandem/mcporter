@@ -20,7 +20,7 @@ import {
 import {
   clearVaultEntry,
   clearVaultTokensIfMatching,
-  getOAuthVaultPath,
+  describeOAuthVault,
   loadVaultEntryForRecovery,
   reconcileVaultServerUrl,
   saveVaultEntry,
@@ -343,7 +343,7 @@ export class VaultPersistence implements OAuthPersistence {
   constructor(private readonly definition: ServerDefinition) {}
 
   describe(): string {
-    return `${getOAuthVaultPath()} (vault)`;
+    return describeOAuthVault();
   }
 
   private async reconcileServerUrl(): Promise<void> {

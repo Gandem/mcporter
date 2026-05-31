@@ -115,6 +115,8 @@ describe.skipIf(process.platform === 'win32')('Bun artifact generation', () => {
         path.resolve(targetPath),
         '--target',
         runtimeKind,
+        '--external',
+        '@napi-rs/keyring',
         ...(minify ? ['--minify'] : []),
       ]);
       expect(build?.cwd).toMatch(/[/\\]bundle-[^/\\]+$/);
