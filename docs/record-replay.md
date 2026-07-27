@@ -50,3 +50,19 @@ Each line is one JSON-RPC envelope with an added `_meta` object:
 Replay is strict. For each server, mcporter expects requests to arrive in the same order with the same JSON-RPC method and deeply equal `params`. If the next request differs, replay fails with an error that names the incoming request and the next recorded request it expected.
 
 This makes recordings useful as reproducible bug fixtures: a replay either follows the captured MCP exchange exactly or fails at the first point where the workflow diverges.
+
+## Safe regression fixtures
+
+Recording is not automatic redaction. Before using a capture as a regression
+fixture, copy it to a separate working file and replace credentials, tokens,
+personal data, customer content, and sensitive paths with synthetic values.
+Preserve JSON-RPC methods, request order, IDs, and parameter shapes so strict
+replay still exercises the intended behavior.
+
+Prefer fixtures recorded from a synthetic MCP server. Never commit the raw
+capture, and review the redacted NDJSON as text before sharing it. Applications
+that use the [external policy wrapper described in the generated CLI
+guidance](./cli-generator.md#policy-boundary-for-generated-clis) can optionally
+run that application-owned wrapper against `mcporter replay`, assert the
+expected policy decision and tool result, and confirm that the fixture contains
+none of the original sensitive values.
