@@ -10,7 +10,7 @@ This file tracks limitations that users regularly run into. Most of these requir
 
 ## Hosted OAuth servers (Supabase, GitHub MCP, etc.)
 
-- Supabase’s hosted MCP server rejects the standard `mcp:tools` scope and only accepts Supabase-specific scopes (`projects:read`, `database:write`, ...). Because they do not expose OAuth discovery metadata or scope negotiation, mcporter cannot auto-register or complete the flow. Workarounds:
+- Supabase’s hosted MCP server accepts Supabase-specific scopes (`projects:read`, `database:write`, etc.) rather than the historical `mcp:tools` default. When a provider does not publish usable scope metadata, set the required scopes explicitly with the server definition’s `oauthScope` field. Other workarounds:
   - Use Supabase’s supported clients (Cursor, Windsurf).
   - Self-host their MCP server and configure PAT headers / custom OAuth.
   - Ask Supabase to accept the MCP scope or publish their scope list.
@@ -24,15 +24,9 @@ This file tracks limitations that users regularly run into. Most of these requir
 - Workarounds: inspect the server’s README / manual docs for output details, or wrap the tool via `createServerProxy` and handle the raw envelope manually.
 - Potential improvement: allow user-provided schema overrides (e.g., `mcporter config patch`, CLI flag to load schema JSON) so we can fill gaps on a per-tool basis.
 
-## MCP SDK 1.22.0 inline-stdio regression
-
-- Upgrading `@modelcontextprotocol/sdk` to 1.22.0 causes `mcporter generate-cli --compile` (and direct runtime `listTools`) to fail against inline STDIO servers with `MCP error -32603: Cannot read properties of undefined (reading 'typeName')`.
-- Repro: `pnpm mcporter generate-cli "node mock-stdio.mjs" --compile /tmp/inline-cli --runtime bun` using the inline stdio harness in `tests/cli-generate-cli.integration.test.ts`.
-- Status: **stale pinned observation from SDK 1.22.0, not a current finding.** The `~1.21.2` pin described here is no longer in effect — `package.json` has since moved to `@modelcontextprotocol/sdk` `^1.30.0`. Whether the underlying regression was fixed upstream, worked around in the inline-stdio test harness, or is simply no longer exercised has not been re-verified. Re-run the repro above against the current SDK before relying on this entry.
-
 ## Next Steps
 
-- Implement true scope negotiation (read discovery metadata, allow `--oauth-scope`).
+- Improve scope negotiation for providers with incomplete discovery metadata and expose the existing `oauthScope` override as a CLI flag.
 - Keep lobbying providers for spec-compliant OAuth behavior.
 - Consider adding schema override hooks or auto-caching schema snapshots per tool.
 

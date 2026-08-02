@@ -51,8 +51,7 @@
       "env": {
         "SIGNOZ_URL": "${SIGNOZ_URL:-http://localhost:3301}",
         "SIGNOZ_TOKEN": "${SIGNOZ_TOKEN:-}",
-        "npm_config_loglevel": "error",
-        "NODE_OPTIONS": "--require=./scripts/mcp_signoz_retry_patch.cjs"
+        "npm_config_loglevel": "error"
       }
     },
     "shadcn": {

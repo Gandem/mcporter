@@ -1,5 +1,7 @@
 ---
 summary: 'How to migrate from pnpm mcp:* wrappers to the mcporter package.'
+read_when:
+  - 'Helping teammates migrate old pnpm workflows to mcporter'
 ---
 
 # Migration Guide
@@ -74,4 +76,4 @@ Use `callOnce` for fire-and-forget invocations.
 
 ---
 
-For deeper architectural notes and future work, see [`docs/spec.md`](./spec.md).
+For an overview of the current architecture, see [`docs/mcp.md`](./mcp.md).

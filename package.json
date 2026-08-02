@@ -5,11 +5,10 @@
   "keywords": [
     "cli",
     "mcp",
-    "model-context-protocol",
-    "sweetistics"
+    "model-context-protocol"
   ],
   "license": "MIT",
-  "author": "Sweetistics",
+  "author": "OpenClaw",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/openclaw/mcporter.git"

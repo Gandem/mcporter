@@ -22,22 +22,13 @@ const sections = [
   ['Start', ['index.md', 'install.md', 'quickstart.md', 'config.md']],
   ['CLI', ['cli-reference.md', 'call-syntax.md', 'call-heuristic.md', 'shortcuts.md', 'logging.md']],
   ['Generators', ['cli-generator.md', 'emit-ts.md', 'tool-calling.md']],
-  ['Connecting servers', ['adhoc.md', 'import.md', 'local.md', 'daemon.md', 'mcp.md']],
+  ['Connecting servers', ['adhoc.md', 'import.md', 'local.md', 'mcp.md']],
   ['Agents', ['agent-skills.md']],
   [
     'Operations',
-    [
-      'RELEASE.md',
-      'manual-testing.md',
-      'livetests.md',
-      'hang-debug.md',
-      'windows.md',
-      'tmux.md',
-      'known-issues.md',
-      'supabase-auth-issue.md',
-    ],
+    ['RELEASE.md', 'manual-testing.md', 'livetests.md', 'hang-debug.md', 'windows.md', 'tmux.md', 'known-issues.md'],
   ],
-  ['Reference', ['spec.md', 'migration.md', 'pnpm-mcp-migration.md', 'refactor.md']],
+  ['Reference', ['migration.md']],
 ];
 
 // Skip these from page generation (internal notes etc.). Pages excluded here are

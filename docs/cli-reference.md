@@ -134,5 +134,5 @@ A quick reference for the primary `mcporter` subcommands. Each command inherits
   - `--types-out <file>` – override where the `.d.ts` sits when using client
     mode.
 
-For more detail (behavioral nuances, OAuth flows, etc.), see `docs/spec.md` and
-command-specific docs under `docs/`.
+For more detail about configuration and OAuth flows, see `docs/config.md` and
+the command-specific docs under `docs/`.

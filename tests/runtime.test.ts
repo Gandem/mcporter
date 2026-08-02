@@ -8,7 +8,7 @@ import { resolveCommandArgument } from '../src/runtime/utils.js';
 const FIXTURE_PATH = path.resolve(__dirname, 'fixtures', 'mcporter.json');
 
 describe('loadServerDefinitions', () => {
-  it('parses all Sweetistics servers', async () => {
+  it('parses all configured servers', async () => {
     const servers = await loadServerDefinitions({
       configPath: FIXTURE_PATH,
       rootDir: '/repo',

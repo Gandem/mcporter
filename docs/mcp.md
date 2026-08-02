@@ -6,7 +6,7 @@ read_when:
 
 # mcporter Overview
 
-mcporter is the Sweetistics CLI + runtime for the Model Context Protocol (MCP). It wraps the upstream TypeScript SDK with:
+mcporter is a CLI and TypeScript runtime for the Model Context Protocol (MCP). It wraps the upstream TypeScript SDK with:
 
 - **Runtime orchestration** – `createRuntime` loads servers from config JSON, editor imports, or ad-hoc flags and handles OAuth retries, transport promotion, and cleanup.
 - **CLI surfaces** – `mcporter list`, `mcporter call`, `mcporter generate-cli`, `mcporter emit-ts`, and `mcporter inspect-cli` expose the runtime features to humans and scripts.
