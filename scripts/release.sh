@@ -115,16 +115,19 @@ const release = JSON.parse(fs.readFileSync(process.argv[4], 'utf8'));
 const tag = process.argv[5];
 const commit = process.argv[6];
 const version = tag.slice(1);
+// Sort every name list with the same code-unit comparator: localeCompare is
+// ICU-locale dependent and orders '-' vs '_' differently across machines.
+const byCodeUnit = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 const expectedNames = [
   `mcporter_${version}_darwin_arm64.tar.gz`,
   `mcporter_${version}_darwin_x86_64.tar.gz`,
   `mcporter-${version}.tgz`,
   'checksums.txt',
   'provenance.json',
-].sort();
-const releaseAssets = [...(release.assets ?? [])].sort((a, b) => a.name.localeCompare(b.name));
+].sort(byCodeUnit);
+const releaseAssets = [...(release.assets ?? [])].sort((a, b) => byCodeUnit(a.name, b.name));
 function validateManifest(manifest, arch) {
-  const assets = [...(manifest.assets ?? [])].sort((a, b) => a.name.localeCompare(b.name));
+  const assets = [...(manifest.assets ?? [])].sort((a, b) => byCodeUnit(a.name, b.name));
   if (
     manifest.schemaVersion !== 2 ||
     manifest.arch !== arch ||
