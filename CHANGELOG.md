@@ -1,5 +1,15 @@
 # mcporter Changelog
 
+## [Unreleased]
+
+### OAuth
+
+- Open the Windows OAuth browser via shell-free `rundll32 url.dll,FileProtocolHandler` instead of a `cmd.exe` command string, so quote- or ampersand-bearing authorization URLs cannot run shell side effects. (PR #242, thanks @SebTardif)
+
+### CLI
+
+- Stop reading embedded digits (ports, durations, hostnames, request ids) as HTTP 401 auth signals in connection-error classification, and let known status codes win over message text, so unreachable servers are no longer promoted to `auth: "oauth"`. (PR #248, thanks @Yigtwxx)
+
 ## [0.12.4] - 2026-08-02
 
 ### CLI
