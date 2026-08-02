@@ -1,7 +1,9 @@
 import ora from 'ora';
 import type { ServerDefinition } from '../config.js';
+import type { Runtime } from '../runtime.js';
 import { setStdioLogMode } from '../sdk-patches.js';
 import { MCPORTER_VERSION } from '../version.js';
+import { renderAdhocServerHelpLines } from './adhoc-help.js';
 import { persistPreparedEphemeralServer, prepareEphemeralServerTarget } from './ephemeral-target.js';
 import { splitHttpToolSelector } from './http-utils.js';
 import { chooseClosestIdentifier, renderIdentifierResolutionMessages } from './identifier-helpers.js';
@@ -26,10 +28,7 @@ import { LIST_TIMEOUT_MS, withTimeout } from './timeouts.js';
 import { loadToolMetadata } from './tool-cache.js';
 import { formatTransportSummary } from './transport-utils.js';
 
-export async function handleList(
-  runtime: Awaited<ReturnType<(typeof import('../runtime.js'))['createRuntime']>>,
-  args: string[]
-): Promise<void> {
+export async function handleList(runtime: Runtime, args: string[]): Promise<void> {
   const flags = extractListFlags(args);
   let target = args.shift();
   let requestedTool: string | undefined;
@@ -397,7 +396,7 @@ export async function handleList(
 }
 
 async function checkListServer(
-  runtime: Awaited<ReturnType<(typeof import('../runtime.js'))['createRuntime']>>,
+  runtime: Runtime,
   server: ServerDefinition,
   timeoutMs: number,
   disableOAuth: boolean
@@ -462,17 +461,7 @@ export function printListHelp(): void {
     '  https://host/mcp       List an HTTP server directly; mcporter infers the entry.',
     '',
     'Ad-hoc servers:',
-    '  --http-url <url>       Register an HTTP server for this run.',
-    '  --allow-http           Permit plain http:// URLs with --http-url.',
-    '  --header KEY=value     Attach HTTP headers (repeatable).',
-    '  --stdio <command>      Run a stdio MCP server (repeat --stdio-arg for args).',
-    '  --stdio-arg <value>    Append args to the stdio command (repeatable).',
-    '  --env KEY=value        Inject env vars for stdio servers (repeatable).',
-    '  --cwd <path>           Working directory for stdio servers.',
-    '  --name <value>         Override the display name for ad-hoc servers.',
-    '  --description <text>   Override the description for ad-hoc servers.',
-    '  --persist <path>       Write the ad-hoc definition to config/mcporter.json.',
-    '  --yes                  Skip confirmation prompts when persisting.',
+    ...renderAdhocServerHelpLines(),
     '',
     'Display flags:',
     '  --brief                Show compact signatures only for a single server.',
@@ -502,7 +491,7 @@ export function printListHelp(): void {
 }
 
 function resolveServerDefinition(
-  runtime: Awaited<ReturnType<(typeof import('../runtime.js'))['createRuntime']>>,
+  runtime: Runtime,
   name: string,
   options: { quiet?: boolean } = {}
 ): { definition: ServerDefinition; name: string } | undefined {
@@ -541,17 +530,14 @@ function resolveServerDefinition(
   }
 }
 
-function suggestServerName(
-  runtime: Awaited<ReturnType<(typeof import('../runtime.js'))['createRuntime']>>,
-  attempted: string
-) {
+function suggestServerName(runtime: Runtime, attempted: string) {
   const definitions = runtime.getDefinitions();
   const names = definitions.map((entry) => entry.name);
   return chooseClosestIdentifier(attempted, names);
 }
 
 function resolveConfiguredToolSelector(
-  runtime: Awaited<ReturnType<(typeof import('../runtime.js'))['createRuntime']>>,
+  runtime: Runtime,
   target: string | undefined
 ): { server: string; tool: string } | undefined {
   if (!target || !target.includes('.')) {
@@ -619,10 +605,7 @@ function printMissingToolJson(
   process.exitCode = 1;
 }
 
-async function loadServerInstructions(
-  runtime: Awaited<ReturnType<(typeof import('../runtime.js'))['createRuntime']>>,
-  serverName: string
-): Promise<string | undefined> {
+async function loadServerInstructions(runtime: Runtime, serverName: string): Promise<string | undefined> {
   if (typeof runtime.getInstructions !== 'function') {
     return undefined;
   }

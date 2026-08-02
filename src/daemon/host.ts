@@ -2,11 +2,12 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import net from 'node:net';
 import path from 'node:path';
-import { loadDaemonConfig, type ServerDefinition } from '../config.js';
+import { loadConfigSnapshot, type DaemonConfig, type ServerDefinition } from '../config.js';
 import { readJsonFile, withFileLock, writeJsonFile } from '../fs-json.js';
 import { isKeepAliveServer } from '../lifecycle.js';
+import { isProcessRunning } from '../process-utils.js';
 import { createRuntime, type Runtime } from '../runtime.js';
-import { collectConfigLayers, statConfigMtime } from './config-layers.js';
+import { collectConfigLayers, normalizeConfigLayers, statConfigMtime } from './config-layers.js';
 import { hashDaemonDefinitions } from './definition-hash.js';
 import {
   createLogContext,
@@ -29,6 +30,7 @@ import type {
 import {
   buildErrorResponse,
   daemonIdleWatcherInterval,
+  delay,
   ensureManaged,
   evictIdleServers,
   markActivity,
@@ -52,14 +54,11 @@ export async function runDaemonHost(options: DaemonHostOptions): Promise<void> {
     configPath: options.configExplicit ? options.configPath : undefined,
     rootDir: options.rootDir,
   });
-  const daemonConfig = await loadDaemonConfig({
+  const startup = await loadDaemonRuntimeState({
     configPath: options.configExplicit ? options.configPath : undefined,
     rootDir: options.rootDir,
   });
-  const runtime = await createRuntime({
-    configPath: options.configExplicit ? options.configPath : undefined,
-    rootDir: options.rootDir,
-  });
+  const { daemonConfig, runtime } = startup;
   const keepAliveDefinitions = runtime.getDefinitions().filter(isKeepAliveServer);
   const definitionHash = hashDaemonDefinitions(keepAliveDefinitions);
   if (keepAliveDefinitions.length === 0) {
@@ -237,6 +236,17 @@ export async function runDaemonHost(options: DaemonHostOptions): Promise<void> {
   process.once('SIGQUIT', shutdown);
 }
 
+export async function loadDaemonRuntimeState(options: {
+  readonly configPath?: string;
+  readonly rootDir?: string;
+}): Promise<{ daemonConfig: DaemonConfig; runtime: Runtime }> {
+  const snapshot = await loadConfigSnapshot(options);
+  return {
+    daemonConfig: snapshot.daemon,
+    runtime: await createRuntime({ servers: snapshot.servers }),
+  };
+}
+
 const DAEMON_PROBE_TIMEOUT_MS = 2_000;
 
 export async function isDaemonResponding(socketPath: string): Promise<boolean> {
@@ -245,7 +255,7 @@ export async function isDaemonResponding(socketPath: string): Promise<boolean> {
 
 async function probeLiveDaemon(socketPath: string): Promise<StatusResult | null> {
   const status = await probeDaemonStatus(socketPath);
-  if (!status || status.socketPath !== socketPath || !isProcessAlive(status.pid)) {
+  if (!status || status.socketPath !== socketPath || !isProcessRunning(status.pid)) {
     return null;
   }
   return status;
@@ -298,12 +308,12 @@ function daemonConfigMatches(
   if (live.definitionHash !== currentDefinitionHash) {
     return false;
   }
-  const liveLayers = normalizeLayers(
+  const liveLayers = normalizeConfigLayers(
     live.configLayers && live.configLayers.length > 0
       ? live.configLayers
       : [{ path: live.configPath, mtimeMs: live.configMtimeMs ?? null }]
   );
-  const expectedLayers = normalizeLayers(
+  const expectedLayers = normalizeConfigLayers(
     currentLayers.length > 0 ? currentLayers : [{ path: currentConfigPath, mtimeMs: currentConfigMtimeMs }]
   );
   if (liveLayers.length !== expectedLayers.length) {
@@ -315,19 +325,6 @@ function daemonConfigMatches(
   });
 }
 
-function normalizeLayers(
-  layers: Array<{ path: string; mtimeMs: number | null }>
-): Array<{ path: string; mtimeMs: number | null }> {
-  const normalized = layers.map((entry) => ({
-    path: path.isAbsolute(entry.path) ? entry.path : path.resolve(entry.path),
-    mtimeMs: entry.mtimeMs ?? null,
-  }));
-  if (normalized.length < 2) {
-    return normalized;
-  }
-  return normalized.toSorted((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
-}
-
 async function stopLiveDaemon(socketPath: string, livePid: number): Promise<void> {
   const stopped = await sendDaemonStop(socketPath);
   if (!stopped) {
@@ -335,7 +332,7 @@ async function stopLiveDaemon(socketPath: string, livePid: number): Promise<void
   }
   const deadline = Date.now() + 5_000;
   while (Date.now() < deadline) {
-    if (!isProcessAlive(livePid)) {
+    if (!isProcessRunning(livePid)) {
       return;
     }
     await delay(100);
@@ -379,24 +376,6 @@ async function sendDaemonStop(socketPath: string): Promise<boolean> {
     });
     socket.once('error', () => finish(false));
   });
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
-
-function isProcessAlive(pid: number): boolean {
-  if (!Number.isInteger(pid) || pid <= 0) {
-    return false;
-  }
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === 'EPERM';
-  }
 }
 
 async function probeDaemonStatus(socketPath: string): Promise<StatusResult | null> {

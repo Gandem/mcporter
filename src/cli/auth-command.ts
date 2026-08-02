@@ -3,8 +3,9 @@ import type { ServerDefinition } from '../config-schema.js';
 import type { OAuthAuthorizationRequest, OAuthSessionOptions } from '../oauth.js';
 import { analyzeConnectionError } from '../error-classifier.js';
 import { clearOAuthCaches } from '../oauth-persistence.js';
-import type { createRuntime } from '../runtime.js';
+import type { Runtime } from '../runtime.js';
 import { isOAuthFlowError } from '../runtime/oauth.js';
+import { renderAdhocServerHelpLines } from './adhoc-help.js';
 import type { EphemeralServerSpec } from './adhoc-server.js';
 import { extractEphemeralServerFlags } from './ephemeral-flags.js';
 import { persistPreparedEphemeralServer, prepareEphemeralServerTarget } from './ephemeral-target.js';
@@ -12,8 +13,6 @@ import { looksLikeHttpUrl } from './http-utils.js';
 import { buildConnectionIssueEnvelope } from './json-output.js';
 import { getActiveLogger, logInfo, logWarn } from './logger-context.js';
 import { consumeOutputFormat } from './output-format.js';
-
-type Runtime = Awaited<ReturnType<typeof createRuntime>>;
 
 type BrowserSuppression = 'default' | 'no-browser';
 
@@ -244,17 +243,7 @@ export function printAuthHelp(): void {
     '  MCPORTER_OAUTH_NO_BROWSER=1|true|yes also enables --no-browser behavior.',
     '',
     'Ad-hoc targets:',
-    '  --http-url <url>        Register an HTTP server for this run.',
-    '  --allow-http            Permit plain http:// URLs with --http-url.',
-    '  --header KEY=value      Attach HTTP headers (repeatable).',
-    '  --stdio <command>       Run a stdio MCP server (repeat --stdio-arg for args).',
-    '  --stdio-arg <value>     Append args to the stdio command (repeatable).',
-    '  --env KEY=value         Inject env vars for stdio servers (repeatable).',
-    '  --cwd <path>            Working directory for stdio servers.',
-    '  --name <value>          Override the display name for ad-hoc servers.',
-    '  --description <text>    Override the description for ad-hoc servers.',
-    '  --persist <path>        Write the ad-hoc definition to config/mcporter.json.',
-    '  --yes                   Skip confirmation prompts when persisting.',
+    ...renderAdhocServerHelpLines(24),
     '',
     'Examples:',
     '  mcporter auth linear',
