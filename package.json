@@ -42,7 +42,7 @@
   "scripts": {
     "mcporter": "tsx src/cli.ts",
     "mcp": "pnpm exec tsx src/cli.ts",
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && node -e \"require('fs').chmodSync('dist/cli.js', 0o755)\"",
     "build:bun": "bun scripts/build-bun.ts",
     "check": "pnpm format:check && pnpm lint:oxlint && pnpm typecheck",
     "format": "oxfmt .",
