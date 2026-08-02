@@ -284,7 +284,13 @@ verify_native_archive() {
   grep -E '^CodeDirectory .*flags=.*\(runtime\)' <<<"$signature" >/dev/null
   grep -E '^Timestamp=' <<<"$signature" >/dev/null
   embedded_requirement=$(codesign -d -r- "$binary" 2>&1)
-  grep -Fqx "designated => $REQUIREMENT" <<<"$embedded_requirement" || {
+  # codesign decompiles the embedded requirement into canonical form: `exists`
+  # becomes a `/* exists */` comment and constant quoting is dropped. Normalize
+  # both sides before the exact structural comparison.
+  embedded_designated=$(sed -n 's/^designated => //p' <<<"$embedded_requirement")
+  normalized_embedded=$(sed -e 's| /\* exists \*/| exists|g' -e 's|"||g' <<<"$embedded_designated")
+  normalized_policy=$(sed -e 's| /\* exists \*/| exists|g' -e 's|"||g' <<<"$REQUIREMENT")
+  [[ -n "$embedded_designated" && "$normalized_embedded" == "$normalized_policy" ]] || {
     echo "embedded designated requirement mismatch: $archive_name" >&2
     exit 1
   }

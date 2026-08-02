@@ -65,7 +65,15 @@ grep -Fx "TeamIdentifier=$TEAM_ID" <<<"$signature" >/dev/null
 grep -E '^CodeDirectory .*flags=.*\(runtime\)' <<<"$signature" >/dev/null
 grep -E '^Timestamp=' <<<"$signature" >/dev/null
 embedded_requirement=$(codesign -d -r- "$BINARY" 2>&1)
-grep -Fqx "designated => $REQUIREMENT" <<<"$embedded_requirement" || {
+# codesign decompiles the embedded requirement into canonical form: `exists`
+# becomes a `/* exists */` comment and constant quoting is dropped. Normalize
+# both sides before the exact structural comparison.
+normalize_requirement() {
+  sed -e 's| /\* exists \*/| exists|g' -e 's|"||g'
+}
+embedded_designated=$(sed -n 's/^designated => //p' <<<"$embedded_requirement")
+[[ -n "$embedded_designated" &&
+  "$(normalize_requirement <<<"$embedded_designated")" == "$(normalize_requirement <<<"$REQUIREMENT")" ]] || {
   echo "embedded designated requirement does not match the release policy" >&2
   exit 1
 }
