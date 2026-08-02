@@ -43,4 +43,4 @@ When you need raw access (custom transports, streaming), use the bare `Client` f
 - **Tool Calling Cheatsheet** (`docs/tool-calling.md`) – shows the two argument styles and when to use each.
 - **Hang Diagnostics** (`docs/hang-debug.md` + `docs/tmux.md`) – run long-lived commands inside tmux and dump active handles if shutdown stalls.
 
-Read these docs (via `pnpm run docs:list`) whenever your task touches the corresponding area. They contain the up-to-date guardrails used across Sweetistics repositories.
+Read these docs (via `pnpm run docs:list`) whenever your task touches the corresponding area. They contain the up-to-date project guidance.

@@ -23,7 +23,7 @@ const sections = [
   ['CLI', ['cli-reference.md', 'call-syntax.md', 'call-heuristic.md', 'shortcuts.md', 'logging.md']],
   ['Generators', ['cli-generator.md', 'emit-ts.md', 'tool-calling.md']],
   ['Connecting servers', ['adhoc.md', 'import.md', 'local.md', 'daemon.md', 'mcp.md']],
-  ['Agents', ['agent-skills.md', 'subagent.md']],
+  ['Agents', ['agent-skills.md']],
   [
     'Operations',
     [
