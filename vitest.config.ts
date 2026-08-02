@@ -17,5 +17,8 @@ export default defineConfig({
     // CLI-heavy suites import the full entrypoint in parallel and can exceed the
     // default 5s timeout under local load even when behavior is correct.
     testTimeout: 10_000,
+    // Agent worktrees under .claude/worktrees contain full repo copies; without
+    // this exclude a root-level run also collects every worktree's test suite.
+    exclude: ['**/node_modules/**', '**/dist/**', '**/.claude/**'],
   },
 });
