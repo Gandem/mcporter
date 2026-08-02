@@ -1,26 +1,20 @@
 # mcporter Changelog
 
-## [Unreleased]
-
-### OAuth
-
-- Open the Windows OAuth browser via shell-free `rundll32 url.dll,FileProtocolHandler` instead of a `cmd.exe` command string, so quote- or ampersand-bearing authorization URLs cannot run shell side effects. (PR #242, thanks @SebTardif)
-- Serialize interactive OAuth authorization per provider/session: concurrent 401s (background SSE reconnect plus a bridged request) now join one pending PKCE transaction instead of opening duplicate prompts, and keep-alive daemons no longer restart and replay operations on auth failures. (Issue #247, thanks @mkaput)
-
-### CLI
-
-- Stop reading embedded digits (ports, durations, hostnames, request ids) as HTTP 401 auth signals in connection-error classification, and let known status codes win over message text, so unreachable servers are no longer promoted to `auth: "oauth"`. (PR #248, thanks @Yigtwxx)
+## [0.12.5] - Unreleased
 
 ## [0.12.4] - 2026-08-02
 
 ### CLI
 
+- Stop reading embedded digits (ports, durations, hostnames, request ids) as HTTP 401 auth signals in connection-error classification, and let known status codes win over message text, so unreachable servers are no longer promoted to `auth: "oauth"`. (PR #248, thanks @Yigtwxx)
 - Route `chrome-devtools-mcp --autoConnect` through a paired OpenClaw Chrome-extension relay when one is live on this host, eliminating Chrome's per-session "Allow remote debugging?" dialog; falls back to plain auto-connect otherwise (`MCPORTER_DISABLE_CHROME_DEVTOOLS_RELAY=1` to opt out).
 - Correct the documented call timeout to 60 seconds and distinguish its `MCPORTER_CALL_TIMEOUT` and `--timeout` overrides from the 30-second list timeout. (PR #230, thanks @KrasimirKralev)
 - Isolate long-lived SSE receive streams from ordinary HTTP requests so byte-idle servers cannot stall tool listing and calls. (PR #234, thanks @umutkeltek)
 
 ### OAuth
 
+- Open the Windows OAuth browser via shell-free `rundll32 url.dll,FileProtocolHandler` instead of a `cmd.exe` command string, so quote- or ampersand-bearing authorization URLs cannot run shell side effects. (PR #242, thanks @SebTardif)
+- Serialize interactive OAuth authorization per provider/session: concurrent 401s (background SSE reconnect plus a bridged request) now join one pending PKCE transaction instead of opening duplicate prompts, and keep-alive daemons no longer restart and replay operations on auth failures. (Issue #247, thanks @mkaput)
 - Recover rotating refresh tokens after transient OAuth refresh failures without clearing a concurrently persisted winner, and clear only the exact rejected token on `invalid_grant`. (PR #227, thanks @feniix)
 - Treat a configured server URL change as a new OAuth trust boundary, clearing cached credentials permanently even if the URL is later reverted. (Issue #231, thanks @sourman)
 
