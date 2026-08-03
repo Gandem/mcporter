@@ -47,14 +47,11 @@ NOTARY_ARCHIVE="$WORK_DIR/$(basename "$BINARY").zip"
 NOTARY_RESULT="$WORK_DIR/notary-result.json"
 EMBEDDED_ENTITLEMENTS="$WORK_DIR/embedded-entitlements.plist"
 NOTARYTOOL_KEYCHAIN=${NOTARYTOOL_KEYCHAIN:-${MAC_RELEASE_CODESIGN_KEYCHAIN:-}}
-
-notarytool_keychain_args=()
 if [[ -n "$NOTARYTOOL_KEYCHAIN" ]]; then
   [[ -f "$NOTARYTOOL_KEYCHAIN" ]] || {
     echo "notarytool keychain not found: $NOTARYTOOL_KEYCHAIN" >&2
     exit 1
   }
-  notarytool_keychain_args=(--keychain "$NOTARYTOOL_KEYCHAIN")
 fi
 
 codesign \
@@ -107,12 +104,20 @@ if (JSON.stringify(actual) !== JSON.stringify(expected) || expected.some((key) =
 NODE
 
 ditto -c -k --keepParent "$BINARY" "$NOTARY_ARCHIVE"
-xcrun notarytool submit "$NOTARY_ARCHIVE" \
-  --keychain-profile "$NOTARYTOOL_KEYCHAIN_PROFILE" \
-  "${notarytool_keychain_args[@]}" \
-  --no-s3-acceleration \
-  --wait \
-  --output-format json >"$NOTARY_RESULT"
+if [[ -n "$NOTARYTOOL_KEYCHAIN" ]]; then
+  xcrun notarytool submit "$NOTARY_ARCHIVE" \
+    --keychain-profile "$NOTARYTOOL_KEYCHAIN_PROFILE" \
+    --keychain "$NOTARYTOOL_KEYCHAIN" \
+    --no-s3-acceleration \
+    --wait \
+    --output-format json >"$NOTARY_RESULT"
+else
+  xcrun notarytool submit "$NOTARY_ARCHIVE" \
+    --keychain-profile "$NOTARYTOOL_KEYCHAIN_PROFILE" \
+    --no-s3-acceleration \
+    --wait \
+    --output-format json >"$NOTARY_RESULT"
+fi
 node - "$NOTARY_RESULT" <<'NODE'
 const fs = require('node:fs');
 const result = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
