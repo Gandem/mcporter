@@ -17,7 +17,7 @@ v0.12.3's standalone arm64 binary is not a continuity baseline: it was ad-hoc `a
 - Required identity: `Developer ID Application: OpenClaw Foundation (FWJYW4S8P8)`; identifier: `org.openclaw.mcporter`.
 - Required signing: hardened runtime, secure timestamp, and only `allow-jit` plus `allow-unsigned-executable-memory` Bun entitlements.
 - Standalone CLI binaries must embed the exact designated requirement and pass strict Developer ID metadata plus the online `notarized` codesign constraint. macOS 26.5 does not treat a raw CLI as an app for `spctl --assess --type execute`, so raw-binary `spctl` success is neither required nor mocked. The final Gatekeeper proof is naturally quarantined execution without an alert on each clean native-architecture VM; `spctl`, `syspolicy_check`, and stapling remain applicable to future `.app`, `.dmg`, or `.pkg` targets.
-- `NOTARYTOOL_KEYCHAIN_PROFILE` names a pre-existing local profile. It is injected only at the serialized native gate; no preparation/build/test step retrieves it.
+- `NOTARYTOOL_KEYCHAIN_PROFILE` names a pre-existing local profile. When that profile lives in the managed release keychain, `NOTARYTOOL_KEYCHAIN` passes its explicit path to `notarytool`; otherwise packaging uses the keychain prepared by `codesign-run`. These values are injected only at the serialized native gate; no preparation/build/test step retrieves them.
 - The verifier job grants its built-in `github.token` only `contents: write`, which GitHub requires for draft visibility. That token exists only in the exact draft-download step; the verifier explicitly rejects `GH_TOKEN` and `GITHUB_TOKEN` before it executes the package or either native candidate. No repository release-token secret is used.
 - `.github/workflows/release-assets.yml` and `.github/workflows/update-homebrew-tap.yml` must be dispatched from the repository's current default branch. Both reject a mismatched workflow ref.
 - Release automation accepts stable `vMAJOR.MINOR.PATCH` tags only; prereleases require a separate dist-tag-aware contract before they can enter this pipeline.
@@ -40,7 +40,12 @@ v0.12.3's standalone arm64 binary is not a continuity baseline: it was ad-hoc `a
 This step is secret-bearing and must wait for the exact-tag serialized release gate. It requires Apple Silicon plus Rosetta, the canonical managed Foundation release keychain supplied at runtime, and the existing notary profile name:
 
 ```bash
-export NOTARYTOOL_KEYCHAIN_PROFILE='<existing-profile-name>'
+NOTARYTOOL_KEYCHAIN_PROFILE='<existing-profile-name>' \
+NOTARYTOOL_KEYCHAIN="$HOME/Library/Keychains/openclaw-developer-id-release.keychain-db" \
+MAC_RELEASE_CODESIGN_KEYCHAIN="$HOME/Library/Keychains/openclaw-developer-id-release.keychain-db" \
+MAC_RELEASE_CODESIGN_IDENTITY='Developer ID Application: OpenClaw Foundation (FWJYW4S8P8)' \
+MAC_RELEASE_CODESIGN_KEYCHAIN_MANAGED=1 \
+MAC_RELEASE_CODESIGN_PASSWORDLESS=1 \
 ./scripts/release.sh native
 ```
 

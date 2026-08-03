@@ -226,6 +226,7 @@ cat >"$MOCK_BIN/xcrun" <<'MOCK'
 #!/usr/bin/env bash
 set -euo pipefail
 printf 'notary-submit\n' >>"$MOCK_LOG"
+printf 'notary-args %s\n' "$*" >>"$MOCK_LOG"
 printf '{"id":"mock-submission","status":"%s"}\n' "${MOCK_NOTARY_STATUS:-Accepted}"
 MOCK
 
@@ -253,10 +254,12 @@ MCPORTER_OFFICIAL_RELEASE=0 "$ROOT/scripts/codesign-native.sh" "$WORK/missing"
 [[ ! -s "$MOCK_LOG" ]] || fail 'ordinary build invoked release tools'
 
 plain_binary="$WORK/mcporter"
+notary_keychain="$WORK/openclaw-release.keychain-db"
 printf '#!/usr/bin/env bash\necho %s\n' "$VERSION" >"$plain_binary"
 chmod 755 "$plain_binary"
+: >"$notary_keychain"
 assert_fails env \
-  MCPORTER_OFFICIAL_RELEASE=1 \
+MCPORTER_OFFICIAL_RELEASE=1 \
   CODESIGN_IDENTITY="$EXPECTED_IDENTITY" \
   "$ROOT/scripts/codesign-native.sh" "$plain_binary"
 [[ ! -s "$MOCK_LOG" ]] || fail 'missing notary profile reached release tools'
@@ -267,12 +270,14 @@ assert_fails env \
   "$ROOT/scripts/codesign-native.sh" "$plain_binary"
 [[ ! -s "$MOCK_LOG" ]] || fail 'wrong signing identity reached release tools'
 
-MCPORTER_OFFICIAL_RELEASE=1 \
+  MCPORTER_OFFICIAL_RELEASE=1 \
   CODESIGN_IDENTITY="$EXPECTED_IDENTITY" \
   NOTARYTOOL_KEYCHAIN_PROFILE=mock-profile \
+  NOTARYTOOL_KEYCHAIN="$notary_keychain" \
   "$ROOT/scripts/codesign-native.sh" "$plain_binary"
 [[ "$(grep -c '^sign ' "$MOCK_LOG")" == 1 ]] || fail 'mock signing count mismatch'
 [[ "$(grep -c '^notary-submit$' "$MOCK_LOG")" == 1 ]] || fail 'mock notary count mismatch'
+grep -F -- "--keychain $notary_keychain" "$MOCK_LOG" >/dev/null || fail 'notarytool did not receive the managed keychain path'
 [[ "$(grep -c '^notarization-check ' "$MOCK_LOG")" == 1 ]] || fail 'online notarization check count mismatch'
 
 # A dirty source tree and a rejected notarization both fail before output is published.
@@ -401,6 +406,7 @@ grep -Eq 'arch: process.env.RELEASE_ARCH' "$release_workflow"
 ! grep -Eq '\bspctl\b' "$ROOT/scripts/codesign-native.sh" "$ROOT/scripts/verify-release.sh" || \
   fail 'standalone CLI verification must not require raw-binary spctl success'
 grep -Eq -- '--requirements "=designated => \$REQUIREMENT"' "$ROOT/scripts/codesign-native.sh"
+grep -Eq -- '--keychain "\$NOTARYTOOL_KEYCHAIN"' "$ROOT/scripts/codesign-native.sh"
 for native_script in "$ROOT/scripts/codesign-native.sh" "$ROOT/scripts/verify-release.sh"; do
   grep -Eq -- '--verify --strict --check-notarization -R=notarized' "$native_script" || \
     fail 'standalone CLI online notarization constraint changed'

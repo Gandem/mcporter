@@ -1,16 +1,5 @@
 # mcporter Changelog
 
-## [0.13.1] - Unreleased
-
-### Daemon
-
-- Treat the daemon socket timeout as an idle liveness budget refreshed by progress frames, so interactive OAuth can outlive 30 seconds without restarting the daemon and opening a duplicate prompt. (PR #241, thanks @umutkeltek)
-- Keep daemon protocol v1 and v2 interoperable while returning daemon-owned operation timeouts as non-retryable errors. (PR #241, thanks @umutkeltek)
-
-### Tooling / Dependencies
-
-- Refresh Acorn, Rolldown, Vite, Oxlint, Oxfmt, Node types, and security overrides within the repository's release-age policy.
-
 ## [0.13.0] - 2026-08-02
 
 ### MCP 2.0
@@ -38,6 +27,11 @@
 - Preserve protocol-version pins and supported snake_case config aliases when generating or regenerating standalone CLIs.
 - Normalize `--compile` bundle targets consistently instead of returning a platform-native path only when an extension was supplied.
 - Resolve bundled dependency roots for packages whose `package.json` is hidden behind export maps, avoiding an unnecessary npm fallback.
+
+### Daemon
+
+- Treat the daemon socket timeout as an idle liveness budget refreshed by progress frames, so interactive OAuth can outlive 30 seconds without restarting the daemon and opening a duplicate prompt. (PR #241, thanks @umutkeltek)
+- Keep daemon protocol v1 and v2 interoperable while returning daemon-owned operation timeouts as non-retryable errors. (PR #241, thanks @umutkeltek)
 
 ### Record and replay
 
@@ -69,6 +63,11 @@
 ### Docs
 
 - Rewrite the README around a verified quick start and move protocol and daemon details into focused guides.
+
+### Tooling / Dependencies
+
+- Refresh Acorn, Rolldown, Vite, Oxlint, Oxfmt, Node types, and security overrides within the repository's release-age policy.
+- Resolve notarization profiles from the dedicated managed release keychain when packaging signed standalone binaries.
 
 ## [0.12.4] - 2026-08-02
 
