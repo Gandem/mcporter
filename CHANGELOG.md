@@ -2,6 +2,10 @@
 
 ## [0.13.1] - Unreleased
 
+### Tooling
+
+- Remove the obsolete scoped-commit helper and use standard Git commands in isolated worktrees.
+
 ## [0.13.0] - 2026-08-02
 
 ### MCP 2.0
