@@ -12,6 +12,7 @@ import type {
 } from '@modelcontextprotocol/client';
 import { validateClientMetadataUrl } from '@modelcontextprotocol/client';
 import type { ServerDefinition } from './config.js';
+import { suppressBrowserLaunchFromEnv } from './oauth-browser-suppression.js';
 import { buildStaticClientInformation } from './oauth-client-info.js';
 import type { OAuthPersistence } from './oauth-persistence.js';
 import { buildOAuthPersistence } from './oauth-persistence.js';
@@ -35,6 +36,20 @@ export interface OAuthAuthorizationResponse {
 export interface OAuthSessionOptions {
   suppressBrowserLaunch?: boolean;
   onAuthorizationUrl?: (request: OAuthAuthorizationRequest) => void | Promise<void>;
+}
+
+// Thrown when interactive authorization is needed but browser launch is suppressed
+// and no onAuthorizationUrl consumer exists (headless serve/daemon): callers get a
+// prompt server-named failure instead of waiting out the authorization timeout.
+export class BrowserLaunchSuppressedError extends Error {
+  readonly serverName: string;
+  constructor(serverName: string) {
+    super(
+      `Authorization required for '${serverName}' but browser launch is suppressed (MCPORTER_OAUTH_NO_BROWSER); run 'mcporter auth ${serverName} --no-browser' to authorize.`
+    );
+    this.name = 'BrowserLaunchSuppressedError';
+    this.serverName = serverName;
+  }
 }
 
 interface Deferred<T> {
@@ -340,8 +355,23 @@ class PersistentOAuthClientProvider implements OAuthClientProvider {
       authorizationUrl: authorizationUrl.toString(),
       redirectUrl: this.redirectUrlValue.toString(),
     } satisfies OAuthAuthorizationRequest;
-    if (this.options.suppressBrowserLaunch) {
-      await this.options.onAuthorizationUrl?.(request);
+    if (this.options.suppressBrowserLaunch ?? suppressBrowserLaunchFromEnv()) {
+      if (this.options.onAuthorizationUrl) {
+        await this.options.onAuthorizationUrl(request);
+        return;
+      }
+      // No callback registered (serve/daemon path): reject the pending
+      // authorization so waiters fail fast with a server-named
+      // error instead of waiting out the timeout on a browser handshake nobody
+      // will complete. Never throw here: the SDK invokes this from unawaited send
+      // paths, where a throw becomes an unhandled rejection that kills the daemon.
+      const suppressed = new BrowserLaunchSuppressedError(this.definition.name);
+      this.logger.warn(suppressed.message);
+      const deferred = this.ensureAuthorizationDeferred();
+      // Mark the rejection handled: waiters that attach later still observe it.
+      deferred.promise.catch(() => {});
+      deferred.reject(suppressed);
+      this.clearInteractiveAuthorization();
       return;
     }
     this.logger.info(`Authorization required for ${this.definition.name}. Opening browser...`);
