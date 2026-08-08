@@ -10,6 +10,10 @@
 
 - Invalidate keep-alive Chrome DevTools state when relay policy, URL, timeout, OpenClaw credential paths, or the derived relay `keyId` change, keep `require` fail-closed across retries, and expose the last safe relay decision in `mcporter daemon status`.
 
+### OAuth
+
+- Accept RFC 7591 dynamic-client-registration arrays and timestamps in `mcporter vault set` while preserving null-compatible partial client information and provider metadata. (PR #288 / issue #286, thanks @feniix)
+
 ### Tooling
 
 - Remove the obsolete scoped-commit helper and use standard Git commands in isolated worktrees.
