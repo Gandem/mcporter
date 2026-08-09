@@ -2,6 +2,10 @@
 
 ## [0.13.2] - Unreleased
 
+### OAuth
+
+- Preserve refreshable dynamic OAuth client registrations across fresh callback ports, replacing an obsolete redirect registration only when interactive authorization is required. (Issue #290, thanks @elecnix)
+
 ## [0.13.1] - 2026-08-08
 
 ### CLI
