@@ -2,6 +2,10 @@
 
 ## [0.13.3] - Unreleased
 
+### CLI
+
+- Keep legacy HTTP list and call operations moving when standalone SSE response headers remain pending, while preserving delayed server-to-client messages. (PR #282, thanks @Quack6765)
+
 ## [0.13.2] - 2026-08-08
 
 ### CLI

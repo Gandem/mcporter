@@ -69,6 +69,7 @@ function removeAuthorizationHeader(headers: Record<string, string> | undefined):
 }
 
 const NODE_HTTP1_FETCH_HOSTS: ReadonlySet<string> = new Set(['api.sunsama.com']);
+const STANDALONE_SSE_START_GRACE_MS = 250;
 
 function resolveHttpFetchOverride(definition: ServerDefinition): typeof nodeHttp1Fetch | undefined {
   if (definition.command.kind !== 'http' || definition.httpFetch === 'default') return undefined;
@@ -118,6 +119,24 @@ function trackStandaloneSseFetch(fetchOverride: FetchLike | undefined): {
       }
     },
   };
+}
+
+function waitForStandaloneSseStart(started: Promise<void>, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', finish);
+      resolve();
+    };
+    const timer = setTimeout(finish, STANDALONE_SSE_START_GRACE_MS);
+    signal?.addEventListener('abort', finish, { once: true });
+    if (signal?.aborted) finish();
+    void started.then(finish);
+  });
 }
 
 async function closeOAuthSession(oauthSession?: OAuthSession): Promise<void> {
@@ -268,10 +287,10 @@ async function connectPrimaryHttpTransport(
     recreateTransport: async () => createStreamableTransport(),
   });
   // v2 starts the legacy standalone SSE receive channel asynchronously from
-  // notifications/initialized. Wait for its fetch to receive headers so
-  // callers cannot race their first request ahead of that channel.
+  // notifications/initialized. Give its fetch a bounded chance to receive
+  // headers without blocking servers that leave the response header-idle.
   if (typeof client.getProtocolEra === 'function' && client.getProtocolEra() === 'legacy') {
-    await transportOptions.standaloneSseStarted;
+    await waitForStandaloneSseStart(transportOptions.standaloneSseStarted, options.signal);
   }
   return { client, transport, definition, oauthSession };
 }
@@ -313,3 +332,5 @@ async function connectSseFallbackTransport(
     throw sseError;
   }
 }
+
+export const __test = { waitForStandaloneSseStart };
