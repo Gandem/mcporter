@@ -1,10 +1,15 @@
 # mcporter Changelog
 
-## [0.13.3] - Unreleased
+## [0.13.3] - 2026-08-09
 
 ### CLI
 
-- Keep legacy HTTP list and call operations moving when standalone SSE response headers remain pending, while preserving delayed server-to-client messages. (PR #282, thanks @Quack6765)
+- Keep legacy HTTP list and call operations moving when standalone SSE response headers remain pending. A server that accepted the SSE socket but withheld its response headers would stall the first list or call until the outer command timeout, because a fetch promise does not settle until headers arrive. Readiness is now capped at 250 ms; the SSE request is not cancelled, so delayed server-to-client messages still arrive (PR #282, thanks @Quack6765)
+- Describe the accepted `clientInfo` shape in `vault set` help, covering the string-array fields, timestamp fields, and preserved provider metadata that the validator already enforces (PR #302, thanks @Yigtwxx)
+
+### Maintenance
+
+- Refresh the TypeScript toolchain.
 
 ## [0.13.2] - 2026-08-08
 
