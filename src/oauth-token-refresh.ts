@@ -13,10 +13,12 @@ import {
   resourceUrlFromServerUrl,
 } from '@modelcontextprotocol/client';
 import type { ServerDefinition } from './config.js';
+import { isFileLockTimeoutError } from './fs-json.js';
 import type { Logger } from './logging.js';
 import { buildStaticClientInformation, resolveOAuthClientSecret } from './oauth-client-info.js';
 import { clearLegacyOAuthArtifacts } from './oauth-persistence-stores.js';
 import type { OAuthPersistence } from './oauth-persistence.js';
+import { withRefreshLock } from './oauth-refresh-lock.js';
 import { sameOAuthTokenGeneration } from './oauth-token-generation.js';
 
 type CachedOAuthTokens = OAuthTokens & {
@@ -26,7 +28,133 @@ type CachedOAuthTokens = OAuthTokens & {
 
 const TOKEN_EXPIRY_SKEW_SECONDS = 60;
 
+// Bounds how long a redemption can hold the refresh lock. A live-but-stalled
+// holder is invisible to the lock's pid-based staleness check, so an unbounded
+// request would starve every waiter for its full acquisition budget.
+const TOKEN_REQUEST_TIMEOUT_MS = 10_000;
+
 class OAuthIssuerMismatchError extends Error {}
+
+/**
+ * What the transaction should do after re-reading persisted tokens under the
+ * refresh lock. Another process may have rotated the token while this caller
+ * waited, in which case redeeming again would replay a spent refresh token.
+ */
+type LockedTokenDecision =
+  | { kind: 'gone' }
+  | { kind: 'use'; accessToken: string; adopted: boolean }
+  | { kind: 'unrefreshable'; accessToken: string }
+  | { kind: 'redeem'; tokens: OAuthTokens; refreshToken: string };
+
+function decideUnderRefreshLock(
+  original: OAuthTokens,
+  latest: OAuthTokens | undefined,
+  skewSeconds: number
+): LockedTokenDecision {
+  if (!latest || typeof latest.access_token !== 'string' || latest.access_token.trim().length === 0) {
+    return { kind: 'gone' };
+  }
+  const adopted = cachedTokensChanged(original, latest);
+  if (!shouldRefreshCachedToken(latest, skewSeconds)) {
+    return { kind: 'use', accessToken: latest.access_token, adopted };
+  }
+  if (typeof latest.refresh_token !== 'string' || latest.refresh_token.trim().length === 0) {
+    // A winner that carries no refresh token is still the best available token.
+    return adopted
+      ? { kind: 'use', accessToken: latest.access_token, adopted }
+      : { kind: 'unrefreshable', accessToken: latest.access_token };
+  }
+  return { kind: 'redeem', tokens: latest, refreshToken: latest.refresh_token };
+}
+
+/**
+ * Chooses which store's generation to redeem when the stores disagree.
+ *
+ * The composite read returns the first store holding any tokens, so a save that
+ * only partly landed can leave a spent generation in the higher-priority store
+ * while a newer one sits behind it. Redeeming the spent one is a replay, which
+ * revokes the family — the loss the lock exists to prevent, reached through
+ * storage rather than concurrency.
+ *
+ * Two deliberate limits keep this from breaking rejected-credential recovery:
+ *
+ * - It only overrides store priority when the stores hold *different* refresh
+ *   tokens. Stores commonly differ in generation marker or expiry spelling while
+ *   holding the same refresh token; redeeming either is identical, and that
+ *   per-store divergence is what lets recovery tell a rejected generation apart
+ *   from a concurrent winner.
+ * - It never writes the winner back to the other stores. Flattening them to one
+ *   generation would make recovery clear every copy, discarding a generation
+ *   that should have survived. Divergence resolves on its own: the next
+ *   successful refresh saves to every store.
+ */
+async function reconcilePersistedTokens(
+  definition: ServerDefinition,
+  persistence: OAuthPersistence,
+  logger?: Logger
+): Promise<OAuthTokens | undefined> {
+  const perStore = await persistence.readTokensPerStore?.();
+  if (!perStore || perStore.length <= 1) {
+    return await persistence.readTokens();
+  }
+  const candidates = perStore.filter(
+    (candidate) => typeof candidate.access_token === 'string' && candidate.access_token.trim().length > 0
+  );
+  const distinctRefreshTokens = new Set(
+    candidates.map((candidate) => (typeof candidate.refresh_token === 'string' ? candidate.refresh_token : ''))
+  );
+  if (candidates.length <= 1 || distinctRefreshTokens.size <= 1) {
+    return await persistence.readTokens();
+  }
+
+  let selected = candidates[0];
+  for (const candidate of candidates.slice(1)) {
+    if (selected === undefined || outranksForRedemption(candidate, selected)) {
+      selected = candidate;
+    }
+  }
+  logger?.debug?.(
+    `Persisted OAuth stores for '${definition.name}' hold different refresh tokens; redeeming the newest.`
+  );
+  return selected;
+}
+
+// A generation that still works cannot be one another process already spent.
+// Failing that, the later expiry is the best evidence of which was issued last,
+// since generation markers are opaque and carry no ordering.
+function outranksForRedemption(candidate: OAuthTokens, incumbent: OAuthTokens): boolean {
+  const candidateDue = shouldRefreshCachedToken(candidate);
+  if (candidateDue !== shouldRefreshCachedToken(incumbent)) {
+    return !candidateDue;
+  }
+  const candidateExpiry = tokenExpirySeconds(candidate) ?? Number.NEGATIVE_INFINITY;
+  const incumbentExpiry = tokenExpirySeconds(incumbent) ?? Number.NEGATIVE_INFINITY;
+  return candidateExpiry > incumbentExpiry;
+}
+
+/**
+ * Never redeem outside the lock: a waiter that gave up would be exactly the
+ * concurrent redemption the lock exists to prevent. Returning a possibly
+ * expired token degrades to a 401, which the debug line makes traceable.
+ */
+async function accessTokenAfterLockTimeout(
+  definition: ServerDefinition,
+  persistence: OAuthPersistence,
+  tokenKind: 'OAuth' | 'bearer',
+  logger?: Logger
+): Promise<string | undefined> {
+  const latest = await persistence.readTokens();
+  const accessToken =
+    typeof latest?.access_token === 'string' && latest.access_token.trim().length > 0 ? latest.access_token : undefined;
+  logger?.debug?.(
+    `Timed out waiting for the ${tokenKind} refresh lock for '${definition.name}'; ${
+      accessToken
+        ? 'returning the persisted access token, which may already be expired.'
+        : 'no persisted access token remains.'
+    }`
+  );
+  return accessToken;
+}
 
 function tokenExpirySeconds(tokens: OAuthTokens): number | undefined {
   const stored = tokens as CachedOAuthTokens;
@@ -43,6 +171,17 @@ function cachedTokensChanged(original: OAuthTokens, current: OAuthTokens | undef
     return false;
   }
   return !sameOAuthTokenGeneration(current, original);
+}
+
+/**
+ * Whether a persisted token is close enough to expiry that a refresh is due.
+ *
+ * The OAuth provider needs this to enforce that it never hands the MCP SDK an
+ * expired-but-refreshable token: the SDK would redeem it outside the refresh
+ * lock, which is the replay this module exists to prevent.
+ */
+export function oauthAccessTokenNeedsRefresh(tokens: OAuthTokens): boolean {
+  return shouldRefreshCachedToken(tokens);
 }
 
 function shouldRefreshCachedToken(tokens: OAuthTokens, skewSeconds = TOKEN_EXPIRY_SKEW_SECONDS): boolean {
@@ -118,9 +257,15 @@ function oauthErrorCode(error: unknown): string | undefined {
   if (!error || typeof error !== 'object') {
     return undefined;
   }
-  const { errorCode, name } = error as { errorCode?: unknown; name?: unknown };
-  if (typeof errorCode === 'string' && errorCode.length > 0) {
-    return errorCode.toLowerCase();
+  // `code` is where the MCP SDK's OAuthError carries the OAuth error code, so
+  // without it a real rejected grant would skip recovery and be replayed.
+  // Unrelated codes (an errno such as ECONNREFUSED) fall out of the caller's
+  // allowlist, which is what keeps a transport failure recoverable.
+  const { errorCode, code, name } = error as { errorCode?: unknown; code?: unknown; name?: unknown };
+  for (const candidate of [errorCode, code]) {
+    if (typeof candidate === 'string' && candidate.length > 0) {
+      return candidate.toLowerCase();
+    }
   }
   if (typeof name === 'string') {
     const normalized = name.toLowerCase();
@@ -155,6 +300,47 @@ export async function readCachedAccessTokenWithPersistence(
   if (typeof tokens.refresh_token !== 'string' || tokens.refresh_token.trim().length === 0) {
     return tokens.access_token;
   }
+  if (definition.command.kind !== 'http') {
+    return tokens.access_token;
+  }
+  try {
+    return await withRefreshLock(
+      definition,
+      async () => await refreshCachedOAuthTokenUnderLock(definition, persistence, tokens, logger)
+    );
+  } catch (error) {
+    if (isFileLockTimeoutError(error)) {
+      return await accessTokenAfterLockTimeout(definition, persistence, 'OAuth', logger);
+    }
+    throw error;
+  }
+}
+
+// Runs the whole transaction — re-read, redeem, persist — while holding the
+// refresh lock, so a rotating refresh token is redeemed exactly once.
+async function refreshCachedOAuthTokenUnderLock(
+  definition: ServerDefinition,
+  persistence: OAuthPersistence,
+  original: OAuthTokens,
+  logger?: Logger
+): Promise<string | undefined> {
+  const latest = await reconcilePersistedTokens(definition, persistence, logger);
+  const decision = decideUnderRefreshLock(original, latest, TOKEN_EXPIRY_SKEW_SECONDS);
+  if (decision.kind === 'gone') {
+    logger?.debug?.(`Cached OAuth token for '${definition.name}' was cleared before its refresh could run.`);
+    return undefined;
+  }
+  if (decision.kind === 'unrefreshable') {
+    return decision.accessToken;
+  }
+  if (decision.kind === 'use') {
+    if (decision.adopted) {
+      logger?.debug?.(`Adopted the OAuth access token another refresh persisted first for '${definition.name}'.`);
+    }
+    return decision.accessToken;
+  }
+
+  const tokens = decision.tokens;
   let persistedClientInformation: OAuthClientInformationMixed | undefined;
   try {
     const staticClientInformation = buildStaticClientInformation(definition);
@@ -169,11 +355,11 @@ export async function readCachedAccessTokenWithPersistence(
     if (definition.command.kind !== 'http') {
       return tokens.access_token;
     }
-    const serverInfo = await discoverOAuthServerInfo(definition.command.url);
+    const serverInfo = await discoverOAuthServerInfo(definition.command.url, { fetchFn: boundedRefreshFetch });
     await assertRefreshIssuerBinding(
       definition,
       persistence,
-      tokens,
+      tokens as StoredOAuthTokens,
       clientInformation,
       serverInfo.authorizationServerUrl
     );
@@ -181,7 +367,8 @@ export async function readCachedAccessTokenWithPersistence(
     const refreshed = await refreshAuthorization(serverInfo.authorizationServerUrl, {
       metadata: serverInfo.authorizationServerMetadata,
       clientInformation,
-      refreshToken: tokens.refresh_token,
+      refreshToken: decision.refreshToken,
+      fetchFn: boundedRefreshFetch,
       ...(resource ? { resource } : {}),
     });
     await persistence.saveTokens({ ...refreshed, issuer: serverInfo.authorizationServerUrl });
@@ -210,6 +397,11 @@ export async function readCachedAccessTokenWithPersistence(
     }
     return tokens.access_token;
   }
+}
+
+// Every request issued while the refresh lock is held carries a deadline.
+export function boundedRefreshFetch(input: string | URL, init?: RequestInit): Promise<Response> {
+  return fetch(input, { ...init, signal: init?.signal ?? AbortSignal.timeout(TOKEN_REQUEST_TIMEOUT_MS) });
 }
 
 /**
@@ -272,7 +464,50 @@ async function readExplicitRefreshableBearerToken(
     throw new Error(`Cached bearer token for '${definition.name}' is expired, but no refresh_token is available.`);
   }
   try {
-    const refreshed = await refreshBearerToken(definition, tokens.refresh_token);
+    return await withRefreshLock(
+      definition,
+      async () => await refreshBearerTokenUnderLock(definition, persistence, tokens, skewSeconds, logger)
+    );
+  } catch (error) {
+    if (!isFileLockTimeoutError(error)) {
+      throw error;
+    }
+    const persisted = await accessTokenAfterLockTimeout(definition, persistence, 'bearer', logger);
+    if (persisted) {
+      return persisted;
+    }
+    throw new Error(
+      `Failed to refresh cached bearer token for '${definition.name}': timed out waiting for the refresh lock.`,
+      { cause: error }
+    );
+  }
+}
+
+async function refreshBearerTokenUnderLock(
+  definition: ServerDefinition,
+  persistence: OAuthPersistence,
+  original: OAuthTokens,
+  skewSeconds: number,
+  logger?: Logger
+): Promise<string> {
+  const latest = await reconcilePersistedTokens(definition, persistence, logger);
+  const decision = decideUnderRefreshLock(original, latest, skewSeconds);
+  if (decision.kind === 'gone') {
+    throw new Error(`Cached bearer token for '${definition.name}' was cleared before its refresh could run.`);
+  }
+  if (decision.kind === 'unrefreshable') {
+    throw new Error(`Cached bearer token for '${definition.name}' is expired, but no refresh_token is available.`);
+  }
+  if (decision.kind === 'use') {
+    if (decision.adopted) {
+      logger?.debug?.(`Adopted the bearer access token another refresh persisted first for '${definition.name}'.`);
+    }
+    return decision.accessToken;
+  }
+
+  const tokens = decision.tokens;
+  try {
+    const refreshed = await refreshBearerToken(definition, decision.refreshToken);
     await persistence.saveTokens(refreshed);
     logger?.debug?.(`Refreshed bearer access token for '${definition.name}' (non-interactive).`);
     return refreshed.access_token;
@@ -342,7 +577,7 @@ async function refreshBearerToken(definition: ServerDefinition, refreshToken: st
     ).toString('base64')}`;
   }
 
-  const response = await fetch(refresh.tokenEndpoint, {
+  const response = await boundedRefreshFetch(refresh.tokenEndpoint, {
     method: 'POST',
     headers,
     body,

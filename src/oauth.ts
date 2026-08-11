@@ -16,6 +16,7 @@ import { suppressBrowserLaunchFromEnv } from './oauth-browser-suppression.js';
 import { buildStaticClientInformation } from './oauth-client-info.js';
 import type { OAuthPersistence, OAuthPersistenceSnapshot } from './oauth-persistence.js';
 import { buildOAuthPersistence } from './oauth-persistence.js';
+import { oauthAccessTokenNeedsRefresh, readCachedAccessTokenWithPersistence } from './oauth-token-refresh.js';
 
 const CALLBACK_HOST = '127.0.0.1';
 const CALLBACK_PATH = '/callback';
@@ -36,6 +37,23 @@ export interface OAuthAuthorizationResponse {
 export interface OAuthSessionOptions {
   suppressBrowserLaunch?: boolean;
   onAuthorizationUrl?: (request: OAuthAuthorizationRequest) => void | Promise<void>;
+}
+
+// Thrown when a refresh was due but could not complete, so the only tokens left
+// to hand the MCP SDK are expired ones that still carry a refresh token. The SDK
+// would redeem those outside the refresh lock — the replay that revokes a
+// rotating token family — so the connect fails and is retried instead.
+export class OAuthRefreshUnavailableError extends Error {
+  readonly serverName: string;
+  constructor(serverName: string, options?: ErrorOptions) {
+    super(
+      `Could not refresh OAuth credentials for '${serverName}'. Another process may be refreshing them, ` +
+        `or the token endpoint is unreachable. Retry shortly; run 'mcporter auth ${serverName}' if it persists.`,
+      options
+    );
+    this.name = 'OAuthRefreshUnavailableError';
+    this.serverName = serverName;
+  }
 }
 
 // Thrown when interactive authorization is needed but browser launch is suppressed
@@ -296,6 +314,19 @@ class PersistentOAuthClientProvider implements OAuthClientProvider {
       this.logger.info(`Discarded OAuth client registration for ${this.definition.name} after issuer changed.`);
       return undefined;
     }
+    if (!stored) {
+      const tokens = await this.persistence.readTokens();
+      if (tokens && typeof tokens.refresh_token === 'string' && oauthAccessTokenNeedsRefresh(tokens)) {
+        // The SDK asks for client information before tokens. Clear an expired
+        // orphan here so the DCR that follows cannot redeem its old refresh
+        // token outside the transaction lock; provider.tokens() then returns
+        // undefined and the SDK continues to interactive authorization.
+        await this.persistence.clear('tokens');
+        this.logger.info(
+          `Discarded expired OAuth tokens for ${this.definition.name} because no client registration is available.`
+        );
+      }
+    }
     return stored;
   }
 
@@ -310,7 +341,60 @@ class PersistentOAuthClientProvider implements OAuthClientProvider {
       this.logger.info(`Discarded OAuth tokens for ${this.definition.name} after issuer changed.`);
       return undefined;
     }
-    return stored;
+    return await this.refreshedTokens(stored);
+  }
+
+  /**
+   * Refreshes an expiring token under the cross-process refresh lock before the
+   * SDK sees it.
+   *
+   * This is the interception point for SDK-driven refresh. The SDK redeems a
+   * rotating refresh token itself whenever tokens() hands it an expired one —
+   * proactively before connect and internally on a 401 — and neither call site
+   * is wrappable from here. Returning an already-refreshed token starves that
+   * branch, so the redemption happens once, under the lock, instead of racing
+   * every other process that shares the credential.
+   *
+   * The locked transaction is re-entrant per call chain, so an SDK auth() flow
+   * that already holds the lock does not deadlock on this read.
+   *
+   * Returning an expired token that still carries a refresh token is never
+   * safe here: the SDK redeems whenever this method yields a refresh token — it
+   * never checks expiry — so the redemption would land outside the lock. That
+   * cannot be avoided by withholding the refresh token either, because the SDK
+   * re-persists this method's return value when `issuer` is unset and would
+   * destroy the token instead. So when a due refresh does not produce a usable
+   * token, this fails the connect rather than offering a redeemable stale one.
+   *
+   * Known and accepted limit (issue #305): a 401 makes the SDK redeem the token
+   * this method returns even when it is fresh, and that call site has no seam to
+   * wrap. Two processes taking a 401 at the same instant can still redeem
+   * concurrently; the rejected-refresh recovery in oauth-token-refresh.ts
+   * remains the backstop for that case.
+   */
+  private async refreshedTokens(stored: StoredOAuthTokens | undefined): Promise<StoredOAuthTokens | undefined> {
+    if (!stored || this.definition.auth === 'refreshable_bearer') {
+      return stored;
+    }
+    try {
+      await readCachedAccessTokenWithPersistence(this.definition, this.persistence);
+    } catch (error) {
+      // A refresh that discarded credentials (issuer change, rejected grant)
+      // must surface as "no tokens" so the SDK reauthorizes interactively.
+      this.logger.warn(
+        `Could not refresh OAuth tokens for ${this.definition.name}: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    }
+    const latest = await this.persistence.readTokens();
+    if (latest && typeof latest.refresh_token === 'string' && oauthAccessTokenNeedsRefresh(latest)) {
+      // The refresh was due and did not land: the lock is held by a live
+      // refresher, or the token endpoint failed. Either way this token must not
+      // reach the SDK's refresh branch.
+      throw new OAuthRefreshUnavailableError(this.definition.name);
+    }
+    return latest;
   }
 
   async saveTokens(tokens: StoredOAuthTokens): Promise<void> {

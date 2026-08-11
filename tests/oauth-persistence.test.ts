@@ -7,6 +7,7 @@ import type { OAuthTokens } from '@modelcontextprotocol/client';
 import type { ServerDefinition } from '../src/config.js';
 import { readJsonFile } from '../src/fs-json.js';
 import { buildOAuthPersistence, clearOAuthCaches, readCachedAccessToken } from '../src/oauth-persistence.js';
+import { withRefreshLock } from '../src/oauth-refresh-lock.js';
 import { clearVaultEntry, loadVaultEntry, saveVaultEntry, vaultKeyForDefinition } from '../src/oauth-vault.js';
 
 const authMocks = vi.hoisted(() => ({
@@ -32,6 +33,14 @@ const withUrl = (definition: ServerDefinition, url: string): ServerDefinition =>
   ...definition,
   command: { kind: 'http', url: new URL(url) },
 });
+
+function held(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
 
 describe('oauth persistence', () => {
   const originalEnv = { ...process.env };
@@ -2108,5 +2117,299 @@ describe('oauth persistence', () => {
     const definition = mkDef('current-service', cacheDir);
     await expect(readCachedAccessToken(definition)).resolves.toBe('current-token');
     expect(authMocks.refreshAuthorization).not.toHaveBeenCalled();
+  });
+
+  describe('refresh transaction serialization', () => {
+    const expiredAt = Math.floor(Date.now() / 1000) - 60;
+
+    async function seedExpiredCache(prefix: string): Promise<{ cacheDir: string; tmp: string }> {
+      const tmp = await fs.mkdtemp(path.join(os.tmpdir(), `mcporter-${prefix}-`));
+      tempRoots.push(tmp);
+      homedirSpy = vi.spyOn(os, 'homedir').mockReturnValue(tmp);
+      hasSpy = true;
+      const cacheDir = path.join(tmp, 'cache');
+      await fs.mkdir(cacheDir, { recursive: true });
+      await fs.writeFile(
+        path.join(cacheDir, 'tokens.json'),
+        JSON.stringify({
+          access_token: 'stale-token',
+          token_type: 'Bearer',
+          refresh_token: 'stale-refresh',
+          expires_at: expiredAt,
+        })
+      );
+      return { cacheDir, tmp };
+    }
+
+    it('returns the persisted token without redeeming when the refresh lock stays held', async () => {
+      const { cacheDir } = await seedExpiredCache('oauth-lock-timeout');
+      const definition = mkDef('lock-timeout', cacheDir);
+      process.env.MCPORTER_TEST_REFRESH_LOCK_TIMEOUT_MS = '50';
+
+      const holding = held();
+      const release = held();
+      const holder = withRefreshLock(definition, async () => {
+        holding.resolve();
+        await release.promise;
+      });
+      await holding.promise;
+
+      // Redeeming here would be the concurrent redemption the lock prevents.
+      await expect(readCachedAccessToken(definition)).resolves.toBe('stale-token');
+      expect(authMocks.refreshAuthorization).not.toHaveBeenCalled();
+
+      release.resolve();
+      await holder;
+    });
+
+    it('adopts a token another refresh persisted while this caller waited', async () => {
+      const { cacheDir } = await seedExpiredCache('oauth-adopt-winner');
+      const definition = mkDef('adopt-winner', cacheDir);
+
+      const holding = held();
+      const release = held();
+      const holder = withRefreshLock(definition, async () => {
+        holding.resolve();
+        await release.promise;
+      });
+      await holding.promise;
+
+      const caller = readCachedAccessToken(definition);
+      // Let the caller finish its pre-lock read and start waiting on the lock.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const winner = await buildOAuthPersistence(definition);
+      await winner.saveTokens({
+        access_token: 'winner-token',
+        token_type: 'Bearer',
+        refresh_token: 'winner-refresh',
+        expires_at: Math.floor(Date.now() / 1000) + 3600,
+      } as OAuthTokens);
+
+      release.resolve();
+      await holder;
+
+      await expect(caller).resolves.toBe('winner-token');
+      expect(authMocks.refreshAuthorization).not.toHaveBeenCalled();
+    });
+
+    it('bounds the bearer token request so a stalled endpoint cannot hold the lock', async () => {
+      const { cacheDir } = await seedExpiredCache('bearer-bound');
+      const fetchMock = vi.fn(async () =>
+        Response.json({ access_token: 'fresh-bearer', token_type: 'Bearer', expires_in: 3600 })
+      );
+      vi.stubGlobal('fetch', fetchMock);
+
+      const definition: ServerDefinition = {
+        name: 'bearer-bound',
+        command: { kind: 'stdio', command: 'node', args: ['server.js'], cwd: process.cwd() },
+        auth: 'refreshable_bearer',
+        tokenCacheDir: cacheDir,
+        refresh: {
+          tokenEndpoint: 'https://auth.example.com/token',
+          clientAuthMethod: 'none',
+          accessTokenEnv: 'EXAMPLE_ACCESS_TOKEN',
+        },
+      };
+
+      await expect(readCachedAccessToken(definition)).resolves.toBe('fresh-bearer');
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://auth.example.com/token',
+        expect.objectContaining({ signal: expect.any(AbortSignal) })
+      );
+    });
+
+    it('treats an aborted bearer token request as recoverable, not a rejected grant', async () => {
+      const { cacheDir } = await seedExpiredCache('bearer-abort');
+      const abortError = new Error('The operation was aborted due to timeout');
+      abortError.name = 'TimeoutError';
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => {
+          throw abortError;
+        })
+      );
+
+      const definition: ServerDefinition = {
+        name: 'bearer-abort',
+        command: { kind: 'stdio', command: 'node', args: ['server.js'], cwd: process.cwd() },
+        auth: 'refreshable_bearer',
+        tokenCacheDir: cacheDir,
+        refresh: {
+          tokenEndpoint: 'https://auth.example.com/token',
+          clientAuthMethod: 'none',
+          accessTokenEnv: 'EXAMPLE_ACCESS_TOKEN',
+        },
+      };
+
+      await expect(readCachedAccessToken(definition)).rejects.toThrow(/Failed to refresh cached bearer token/);
+      // A timeout must not be mistaken for invalid_grant, which would clear the family.
+      const persisted = (await readJsonFile(path.join(cacheDir, 'tokens.json'))) as
+        | { refresh_token?: string }
+        | undefined;
+      expect(persisted?.refresh_token).toBe('stale-refresh');
+    });
+
+    it('returns the persisted bearer token instead of throwing when the refresh lock stays held', async () => {
+      const { cacheDir } = await seedExpiredCache('bearer-lock-timeout');
+      process.env.MCPORTER_TEST_REFRESH_LOCK_TIMEOUT_MS = '50';
+      const fetchMock = vi.fn(async () =>
+        Response.json({ access_token: 'should-not-run', token_type: 'Bearer', expires_in: 3600 })
+      );
+      vi.stubGlobal('fetch', fetchMock);
+
+      const definition: ServerDefinition = {
+        name: 'bearer-lock-timeout',
+        command: { kind: 'stdio', command: 'node', args: ['server.js'], cwd: process.cwd() },
+        auth: 'refreshable_bearer',
+        tokenCacheDir: cacheDir,
+        refresh: {
+          tokenEndpoint: 'https://auth.example.com/token',
+          clientAuthMethod: 'none',
+          accessTokenEnv: 'EXAMPLE_ACCESS_TOKEN',
+        },
+      };
+
+      const holding = held();
+      const release = held();
+      const holder = withRefreshLock(definition, async () => {
+        holding.resolve();
+        await release.promise;
+      });
+      await holding.promise;
+
+      await expect(readCachedAccessToken(definition)).resolves.toBe('stale-token');
+      expect(fetchMock).not.toHaveBeenCalled();
+
+      release.resolve();
+      await holder;
+    });
+
+    it('prefers a newer vault generation over a stale token cache before redeeming', async () => {
+      const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'mcporter-divergent-'));
+      tempRoots.push(tmp);
+      homedirSpy = vi.spyOn(os, 'homedir').mockReturnValue(tmp);
+      hasSpy = true;
+
+      const cacheDir = path.join(tmp, 'cache');
+      await fs.mkdir(cacheDir, { recursive: true });
+      const definition = mkDef('divergent-stores', cacheDir);
+
+      // A save that only partly landed: the cache kept the spent generation
+      // while the vault took the rotated one. The cache is read first.
+      await fs.writeFile(
+        path.join(cacheDir, 'tokens.json'),
+        JSON.stringify({
+          access_token: 'spent-access',
+          token_type: 'Bearer',
+          refresh_token: 'spent-refresh',
+          expires_at: Math.floor(Date.now() / 1000) - 120,
+        })
+      );
+      await saveVaultEntry(definition, {
+        tokens: {
+          access_token: 'rotated-access',
+          token_type: 'Bearer',
+          refresh_token: 'rotated-refresh',
+          expires_at: Math.floor(Date.now() / 1000) + 3600,
+        } as OAuthTokens,
+      });
+
+      // Redeeming the cache's spent refresh token here would replay it and
+      // revoke the family, so the newer vault generation has to win.
+      await expect(readCachedAccessToken(definition)).resolves.toBe('rotated-access');
+      expect(authMocks.refreshAuthorization).not.toHaveBeenCalled();
+
+      // The stale store is deliberately left alone. Flattening every store to
+      // the winner would make rejected-credential recovery clear all copies,
+      // discarding a generation that should survive; the next successful refresh
+      // converges them instead.
+      const cached = (await readJsonFile(path.join(cacheDir, 'tokens.json'))) as { access_token?: string } | undefined;
+      expect(cached?.access_token).toBe('spent-access');
+    });
+
+    it('redeems the newer generation when both stores are expired but divergent', async () => {
+      const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'mcporter-divergent-expired-'));
+      tempRoots.push(tmp);
+      homedirSpy = vi.spyOn(os, 'homedir').mockReturnValue(tmp);
+      hasSpy = true;
+
+      const cacheDir = path.join(tmp, 'cache');
+      await fs.mkdir(cacheDir, { recursive: true });
+      const definition = mkDef('divergent-expired', cacheDir);
+
+      await fs.writeFile(
+        path.join(cacheDir, 'tokens.json'),
+        JSON.stringify({
+          access_token: 'spent-access',
+          token_type: 'Bearer',
+          refresh_token: 'spent-refresh',
+          expires_at: Math.floor(Date.now() / 1000) - 600,
+        })
+      );
+      await saveVaultEntry(definition, {
+        clientInfo: { client_id: 'divergent-client', redirect_uris: ['http://127.0.0.1/callback'] },
+        tokens: {
+          access_token: 'newer-access',
+          token_type: 'Bearer',
+          refresh_token: 'newer-refresh',
+          expires_at: Math.floor(Date.now() / 1000) - 30,
+        } as OAuthTokens,
+      });
+
+      authMocks.discoverOAuthServerInfo.mockResolvedValue({
+        authorizationServerUrl: 'https://auth.example.com',
+        authorizationServerMetadata: { issuer: 'https://auth.example.com' },
+        resourceMetadata: undefined,
+      });
+      authMocks.refreshAuthorization.mockResolvedValue({
+        access_token: 'refreshed-access',
+        token_type: 'Bearer',
+        refresh_token: 'refreshed-refresh',
+        expires_in: 3600,
+      });
+
+      await expect(readCachedAccessToken(definition)).resolves.toBe('refreshed-access');
+
+      // The spent cache token must never be the one presented to the provider.
+      expect(authMocks.refreshAuthorization).toHaveBeenCalledTimes(1);
+      expect(authMocks.refreshAuthorization.mock.calls[0]?.[1]).toMatchObject({ refreshToken: 'newer-refresh' });
+    });
+
+    it('honors a custom refresh skew when adopting a concurrently persisted token', async () => {
+      const { cacheDir } = await seedExpiredCache('bearer-skew');
+      const fetchMock = vi.fn(async (_input: string | URL, _init?: RequestInit) =>
+        Response.json({ access_token: 'redeemed-token', token_type: 'Bearer', expires_in: 3600 })
+      );
+      vi.stubGlobal('fetch', fetchMock);
+
+      const definition: ServerDefinition = {
+        name: 'bearer-skew',
+        command: { kind: 'stdio', command: 'node', args: ['server.js'], cwd: process.cwd() },
+        auth: 'refreshable_bearer',
+        tokenCacheDir: cacheDir,
+        refresh: {
+          tokenEndpoint: 'https://auth.example.com/token',
+          clientAuthMethod: 'none',
+          accessTokenEnv: 'EXAMPLE_ACCESS_TOKEN',
+          // A token expiring in 10 minutes is fresh at the 60s default but stale here.
+          refreshSkewSeconds: 1_800,
+        },
+      };
+
+      const persistence = await buildOAuthPersistence(definition);
+      await persistence.saveTokens({
+        access_token: 'not-fresh-enough',
+        token_type: 'Bearer',
+        refresh_token: 'winner-refresh',
+        expires_at: Math.floor(Date.now() / 1000) + 600,
+      } as OAuthTokens);
+
+      // The configured skew still considers the persisted token stale, so the
+      // transaction redeems its refresh token rather than adopting it.
+      await expect(readCachedAccessToken(definition)).resolves.toBe('redeemed-token');
+      const request = fetchMock.mock.calls[0]?.[1] as { body?: URLSearchParams } | undefined;
+      expect(request?.body?.toString()).toContain('refresh_token=winner-refresh');
+    });
   });
 });
