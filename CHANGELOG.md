@@ -1,6 +1,19 @@
 # mcporter Changelog
 
-## [0.13.4] - Unreleased
+## [0.13.4] - 2026-08-11
+
+**Highlight:** OAuth token refresh is now serialized across processes — two
+mcporter processes sharing a credential can no longer race the same refresh
+token into a provider-side replay revocation.
+
+### OAuth
+
+- Serialize the refresh transaction across processes with per-credential locks: waiters re-read persisted state and adopt the winner, a successful rotation persists before it is returned, dead lock holders are recovered, and unrelated credentials stay concurrent. Twelve concurrent callers now perform exactly one redemption where the previous behavior produced seven refreshes and six replays (#306, thanks @feniix)
+- Let the SDK dynamically register a new client when expired tokens exist without stored client metadata, instead of failing preflight before interactive authorization could begin (found during #306 review)
+
+### Maintenance
+
+- Track context7's protocol-era move to 2026-07-28 in the live conformance suite, verified against the real server (#304)
 
 ## [0.13.3] - 2026-08-09
 
