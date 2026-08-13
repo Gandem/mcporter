@@ -144,8 +144,16 @@ async function closeOAuthSession(oauthSession?: OAuthSession): Promise<void> {
 }
 
 function shouldAbortSseFallback(error: unknown): boolean {
+  // After a completed Streamable auth challenge: only fall back on 404/405
+  // transport-mismatch signals (legacy SSE servers), not on other post-auth faults.
   if (isPostAuthConnectError(error)) return !isLegacySseTransportMismatch(error);
-  return isOAuthFlowError(error) || error instanceof OAuthTimeoutError;
+  if (isOAuthFlowError(error) || error instanceof OAuthTimeoutError) return true;
+  // 401/auth still needs the promote + SSE paths below; do not short-circuit them.
+  if (isUnauthorizedError(error)) return false;
+  // Ordinary path: only attempt SSE when primary failure looks like a legacy-SSE
+  // transport mismatch. Generic network errors on streamable-HTTP-only servers
+  // must not fall through to a GET that 405s and masks the real cause (#310).
+  return !isLegacySseTransportMismatch(error);
 }
 
 function isEraNegotiationFailure(error: unknown): boolean {
@@ -327,10 +335,13 @@ async function connectSseFallbackTransport(
         options.onDefinitionPromoted?.(promoted);
         return createHttpClientContext(promoted, logger, options, wrapRecordTransport, clientFactory);
       }
-      if (definition.auth) throw sseError;
+      // Auth challenges from SSE (including ad-hoc HTTP discovery) stay authoritative.
+      throw sseError;
     }
     throw sseError;
   }
 }
 
-export const __test = { waitForStandaloneSseStart };
+export const __test = {
+  waitForStandaloneSseStart,
+};
