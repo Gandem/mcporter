@@ -9,6 +9,7 @@
 ### Maintenance
 
 - Retry transient Homebrew tap workflow API failures and propagation gaps with bounded backoff while preserving request-correlated release proof.
+
 ## [0.13.6] - 2026-08-13
 
 ### CLI
