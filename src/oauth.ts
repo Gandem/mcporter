@@ -431,11 +431,16 @@ class PersistentOAuthClientProvider implements OAuthClientProvider {
     continueDefault: ContinueOAuthUnauthorized
   ): Promise<void> {
     const rejected = context.presentedTokens;
-    if (!rejected) {
-      throw new OAuthRefreshUnavailableError(this.definition.name);
-    }
     try {
       await withRefreshLock(this.definition, async () => {
+        if (!rejected) {
+          // No bearer token was attached to the rejected request (for example,
+          // immediately after `auth --reset`), so let the SDK start its normal
+          // interactive OAuth flow. Keep the default handler under the lock in
+          // case the SDK could not correlate another request's presented token.
+          await continueDefault({ fetchFn: withRefreshRequestTimeout(oauthJsonFetch) });
+          return;
+        }
         const latest = await reconcilePersistedTokens(this.definition, this.persistence);
         if (!latest) {
           throw new OAuthRefreshUnavailableError(this.definition.name);
