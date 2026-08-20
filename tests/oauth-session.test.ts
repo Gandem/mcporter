@@ -5,7 +5,12 @@ import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { auth as sdkAuth, discoverOAuthServerInfo, resolveClientMetadata } from '@modelcontextprotocol/client';
+import {
+  auth as sdkAuth,
+  discoverOAuthServerInfo,
+  resolveClientMetadata,
+  type FetchLike,
+} from '@modelcontextprotocol/client';
 import type { ServerDefinition } from '../src/config.js';
 import { __oauthInternals, createOAuthSession, OAuthRedirectUriMismatchError } from '../src/oauth.js';
 import { loadVaultEntry } from '../src/oauth-vault.js';
@@ -132,6 +137,70 @@ describe('FileOAuthClientProvider session lifecycle', () => {
     expect(session.provider.clientMetadataUrl).toBe('https://client.example.com/oauth/metadata.json');
     expect(resolveClientMetadata(session.provider).application_type).toBe('native');
     await session.close();
+  });
+
+  it('delegates tokenless post-401 responses with a bounded OAuth JSON fetch', async () => {
+    const tokenCacheDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mcporter-oauth-test-'));
+    tempDirs.push(tokenCacheDir);
+    const definition: ServerDefinition = {
+      name: 'test-oauth-tokenless-401',
+      command: { kind: 'http', url: new URL('https://example.com/mcp') },
+      auth: 'oauth',
+      tokenCacheDir,
+    };
+    const session = await createOAuthSession(definition, { info: vi.fn(), warn: vi.fn(), error: vi.fn() });
+    const transportFetch = vi.fn(async () => {
+      throw new Error('OAuth discovery used the MCP transport fetch');
+    });
+    const oauthFetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }));
+    let markFirstDefaultStarted!: () => void;
+    const firstDefaultStarted = new Promise<void>((resolve) => {
+      markFirstDefaultStarted = resolve;
+    });
+    let releaseFirstDefault!: () => void;
+    const firstDefaultCanFinish = new Promise<void>((resolve) => {
+      releaseFirstDefault = resolve;
+    });
+    const continueDefault = vi.fn(async (options?: { fetchFn?: FetchLike }) => {
+      expect(options?.fetchFn).toEqual(expect.any(Function));
+      await options?.fetchFn?.('https://auth.example.com/.well-known/oauth-authorization-server', {
+        headers: { accept: 'application/json, text/event-stream' },
+      });
+      if (continueDefault.mock.calls.length === 1) {
+        markFirstDefaultStarted();
+        await firstDefaultCanFinish;
+      }
+    });
+    const unauthorizedContext = {
+      response: new Response(null, { status: 401 }),
+      serverUrl: new URL('https://example.com/mcp'),
+      fetchFn: transportFetch,
+    };
+    let first: Promise<void> | undefined;
+    let second: Promise<void> | undefined;
+
+    try {
+      first = session.provider.onOAuthUnauthorized?.(unauthorizedContext, continueDefault);
+      await firstDefaultStarted;
+      second = session.provider.onOAuthUnauthorized?.(unauthorizedContext, continueDefault);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(continueDefault).toHaveBeenCalledTimes(1);
+      releaseFirstDefault();
+      await Promise.all([first, second]);
+
+      expect(continueDefault).toHaveBeenCalledTimes(2);
+      expect(transportFetch).not.toHaveBeenCalled();
+      expect(oauthFetch).toHaveBeenCalledTimes(2);
+      for (const [, init] of oauthFetch.mock.calls) {
+        expect(new Headers(init?.headers).get('accept')).toBe('application/json');
+        expect(init?.signal).toBeInstanceOf(AbortSignal);
+      }
+    } finally {
+      releaseFirstDefault();
+      await Promise.allSettled([first, second].filter((promise): promise is Promise<void> => promise !== undefined));
+      await session.close();
+    }
   });
 
   it('keeps the MCP event-stream Accept value out of post-401 OAuth discovery', async () => {
