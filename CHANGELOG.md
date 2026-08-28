@@ -1,5 +1,7 @@
 # mcporter Changelog
 
+## [0.13.9] - Unreleased
+
 ## [0.13.8] - 2026-08-28
 
 **Highlight:** Generated CLIs now handle unusual schema names without startup errors or argument collisions, and direct calls preserve dotted tool names and HTTP query parameters.
