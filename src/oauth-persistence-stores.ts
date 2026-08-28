@@ -46,7 +46,7 @@ function withStoredExpiry(tokens: OAuthTokens): OAuthTokens {
   return tokens;
 }
 
-function prepareStoredTokens(tokens: OAuthTokens): OAuthTokens {
+export function prepareStoredTokens(tokens: OAuthTokens): OAuthTokens {
   return withStoredExpiry(withOAuthTokenGeneration(tokens));
 }
 

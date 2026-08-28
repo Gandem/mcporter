@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import type { OAuthClientInformationMixed, OAuthTokens } from '@modelcontextprotocol/client';
 import type { Runtime } from '../runtime.js';
+import { prepareStoredTokens } from '../oauth-persistence-stores.js';
 import { clearVaultEntry, getOAuthVaultPath, saveVaultEntry } from '../oauth-vault.js';
 import { CliUsageError } from './errors.js';
 
@@ -48,7 +49,7 @@ async function handleVaultSet(
   const definition = runtime.getDefinition(server);
   const payload = validateVaultPayload(parseVaultPayload(await readPayload(source, options), source));
   await saveVaultEntry(definition, {
-    tokens: payload.tokens,
+    tokens: prepareStoredTokens(payload.tokens),
     ...(payload.clientInfo ? { clientInfo: payload.clientInfo } : {}),
   });
   console.log(`Saved OAuth credentials for '${definition.name}' to ${getOAuthVaultPath()}`);
