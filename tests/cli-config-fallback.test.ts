@@ -14,7 +14,7 @@ describe('mcporter CLI config fallback', () => {
 
   beforeEach(async () => {
     originalCwd = process.cwd();
-    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mcporter-cli-config-'));
+    tempDir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'mcporter-cli-config-')));
     process.chdir(tempDir);
     previousNoForceExit = process.env.MCPORTER_NO_FORCE_EXIT;
     process.env.MCPORTER_NO_FORCE_EXIT = '1';
@@ -114,7 +114,7 @@ describe('mcporter CLI with completely empty environment (ENOENT regression)', (
   beforeEach(async () => {
     originalCwd = process.cwd();
     // Create a completely empty temp directory - no config files anywhere
-    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mcporter-cli-empty-env-'));
+    tempDir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'mcporter-cli-empty-env-')));
     process.chdir(tempDir);
     previousNoForceExit = process.env.MCPORTER_NO_FORCE_EXIT;
     process.env.MCPORTER_NO_FORCE_EXIT = '1';

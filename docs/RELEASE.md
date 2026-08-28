@@ -54,6 +54,8 @@ MAC_RELEASE_CODESIGN_PASSWORDLESS=1 \
 
 `scripts/release.sh` finds `mac-release` on `PATH` or in a sibling `agent-scripts` checkout; set `MAC_RELEASE_HELPER=/absolute/path/to/mac-release` for another layout. The release helper wraps `scripts/package-release.sh` in `codesign-run`. Packaging refuses a dirty tree, a tag/HEAD mismatch, an untrusted tag signature, the wrong Developer ID identity, or an existing output directory. It deletes ignored `dist/`, rebuilds it from the exact tag, requires every declared CLI/library entry, packs without lifecycle repacking, and verifies this exact inventory in `dist-release/`:
 
+Set `TMPDIR` to an existing directory on a volume with enough free space for native staging. Set `MCPORTER_RELEASE_OUT_DIR` to place the final artifact directory on that volume too.
+
 - `mcporter_<version>_darwin_arm64.tar.gz`
 - `mcporter_<version>_darwin_x86_64.tar.gz`
 - `mcporter-<version>.tgz`

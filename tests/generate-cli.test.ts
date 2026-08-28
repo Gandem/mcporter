@@ -14,13 +14,14 @@ import { ensureDistBuilt } from './helpers/dist.js';
 const describeGenerateCli = process.platform === 'win32' ? describe.skip : describe;
 
 let baseUrl: URL;
-const tmpDir = path.join(process.cwd(), 'tmp', 'mcporter-cli-tests');
+let tmpDir = path.join(process.cwd(), 'tmp', 'mcporter-cli-tests');
 const CLI_ENTRY = path.join(process.cwd(), 'dist', 'cli.js');
 
 if (process.platform !== 'win32') {
   beforeAll(async () => {
     await fs.rm(tmpDir, { recursive: true, force: true });
     await fs.mkdir(tmpDir, { recursive: true });
+    tmpDir = await fs.realpath(tmpDir);
     const app = express();
     app.use(express.json());
 

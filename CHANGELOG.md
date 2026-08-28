@@ -1,16 +1,32 @@
 # mcporter Changelog
 
-## Unreleased
+## [0.13.8] - 2026-08-28
+
+**Highlight:** Generated CLIs now handle unusual schema names without startup errors or argument collisions, and direct calls preserve dotted tool names and HTTP query parameters.
 
 ### CLI
 
+- Generate valid, distinct flags and property accesses for uppercase, numeric, separator-only, and colliding schema names; preserve explicit `--no-` arguments and nullable-array item types; normalize output schema titles into TypeScript identifiers. (PR #332, integrated in #339, thanks @Yigtwxx)
 - Preserve dotted tool names and HTTP selector query parameters, including configured-server headers and OAuth settings. (PR #333, thanks @Yigtwxx)
-- Generate valid, distinct flags and property accesses for unusual schema names, preserve nullable-array item types, and normalize output schema titles into TypeScript identifiers. (PR #332, thanks @Yigtwxx)
-- Preserve top-level daemon idle timeout settings when adding, removing, or copying config server entries.
+- Preserve top-level daemon idle timeout settings when adding, removing, or copying config server entries. (PR #337)
+- Reject unsupported `${env:VAR}` placeholders with actionable syntax guidance instead of passing them literally to servers. (PR #324, thanks @goutamadwant)
+- Canonically serialize HTTP URLs without corrupting query values or encoded paths. (PR #325, thanks @vincentkoc)
+
+### OAuth
+
+- Normalize imported token expiry while preserving explicit absolute expiry timestamps, so delayed imports do not extend stale credentials. (PR #335, thanks @feniix)
+
+### Reliability
+
+- Schedule long deadlines in bounded timer slices and bucket daemon progress intervals, preserving timeout and idle budgets without excessive timer allocations. (PRs #326 and #330, thanks @vincentkoc)
+- Keep text normalization linear for long inputs and parse documentation heading HTML safely. (PRs #327 and #329, thanks @vincentkoc)
 
 ### Maintenance
 
-- Refresh runtime, build, test, and lint dependencies plus GitHub Actions caching while preserving the 48-hour dependency release-age policy.
+- Refresh runtime, build, test, and lint dependencies plus GitHub Actions caching while preserving the 48-hour dependency release-age policy. (PR #336)
+- Isolate fixture startup and guarantee subprocess cleanup in integration tests. (PR #338)
+- Modernize hashing APIs while preserving existing relay fingerprints, credential identifiers, and refresh-lock keys. (PR #328, thanks @vincentkoc)
+- Honor `TMPDIR` when staging native releases so large artifacts can be built on external storage.
 
 ## [0.13.7] - 2026-08-14
 

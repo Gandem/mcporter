@@ -79,7 +79,7 @@ fi
   exit 1
 }
 
-STAGE=$(mktemp -d "$ROOT/.release-stage.XXXXXX")
+STAGE=$(mktemp -d "${TMPDIR:-$ROOT}/.release-stage.XXXXXX")
 trap 'rm -rf "$STAGE"' EXIT
 PAYLOAD="$STAGE/payload"
 BUILD_ROOT="$STAGE/build"
