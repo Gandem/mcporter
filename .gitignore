@@ -25,6 +25,7 @@ yarn-error.log*
 *.tsbuildinfo
 *.tsbuildinfo.*
 coverage
+.vitest
 build
 out
 tmp

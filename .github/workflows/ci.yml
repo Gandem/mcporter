@@ -16,19 +16,23 @@ concurrency:
 
 jobs:
   build:
-    name: build (${{ matrix.os }})
+    name: build (${{ matrix.label }})
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-15, windows-latest]
+        include:
+          - { os: ubuntu-latest, node: 24, label: ubuntu-latest }
+          - { os: macos-15, node: 24, label: macos-15 }
+          - { os: windows-latest, node: 24, label: windows-latest }
+          - { os: ubuntu-latest, node: 26, label: 'ubuntu-latest, Node 26' }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 24
+          node-version: ${{ matrix.node }}
 
       - run: corepack enable
 
@@ -44,7 +48,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pnpm-
 
-      - run: pnpm install --frozen-lockfile
+      - run: pnpm install --frozen-lockfile --engine-strict
       - run: pnpm --version
       - run: pnpm check
         if: matrix.os != 'macos-15'
@@ -60,7 +64,7 @@ jobs:
         run: ./scripts/test-release.sh
 
       - name: Verify generated schema is committed
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'ubuntu-latest' && matrix.node == 24
         shell: bash
         run: |
           pnpm generate:schema
@@ -68,27 +72,26 @@ jobs:
           git diff --exit-code -- mcporter.schema.json
 
       - name: Build docs site
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'ubuntu-latest' && matrix.node == 24
         run: pnpm docs:site
 
       - run: pnpm test
-        if: matrix.os != 'ubuntu-latest'
+        if: matrix.os != 'ubuntu-latest' || matrix.node == 26
         env:
           FIRECRAWL_API_KEY: test
           LINEAR_API_KEY: test
 
-      # Coverage runs on one platform only: the thresholds in vitest.config.ts are
-      # platform-independent, and instrumenting all three would triple CI time for
-      # no extra signal. This still runs the whole suite, so ubuntu loses nothing.
+      # Coverage runs on Ubuntu/Node 24; every other matrix entry runs the same
+      # full suite without instrumentation. Keep the coverage ratchet unchanged.
       - name: Test with coverage
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'ubuntu-latest' && matrix.node == 24
         run: pnpm test:coverage
         env:
           FIRECRAWL_API_KEY: test
           LINEAR_API_KEY: test
 
       - name: Summarize coverage
-        if: matrix.os == 'ubuntu-latest' && always()
+        if: matrix.os == 'ubuntu-latest' && matrix.node == 24 && always()
         shell: bash
         run: |
           if [ -f coverage/coverage-summary.json ]; then
@@ -98,11 +101,11 @@ jobs:
           fi
 
       - name: Pack npm artifact
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'ubuntu-latest' && matrix.node == 24
         run: pnpm pack --pack-destination /tmp
 
       - name: Upload coverage report
-        if: matrix.os == 'ubuntu-latest' && always()
+        if: matrix.os == 'ubuntu-latest' && matrix.node == 24 && always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: coverage

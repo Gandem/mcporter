@@ -108,7 +108,7 @@ pnpm test
 pnpm docs:site
 ```
 
-The project uses the Node and pnpm versions declared in `package.json`. Live hosted-server tests are opt-in; see [live tests](docs/livetests.md) and [manual testing](docs/manual-testing.md).
+The project uses the pnpm version declared in `package.json` and Vitest 5. Use Node 24 or 26 for development: CI checks Node 24 on Linux, macOS, and Windows, plus Node 26 on Linux. Vitest 5 excludes the non-LTS Node 25 line; the package's runtime requirement remains Node 24 or newer. Live hosted-server tests are opt-in; see [live tests](docs/livetests.md) and [manual testing](docs/manual-testing.md).
 
 ## Related
 
