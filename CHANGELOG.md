@@ -2,6 +2,7 @@
 
 ## [0.13.13] - Unreleased
 
+- Refresh Zod to 4.6.2 across the runtime and protocol fixtures, plus JOSE and test coverage dependencies, preserving Node 24 support and the 48-hour dependency release-age policy.
 - Preserve literal keys through proxies, generated schemas, and canonical JSON, including prototype-named and empty fields; keep distinct cached tool names and require own properties for required arguments.
 - Preserve prototype-named CLI selectors and argument keys across named, JSON, function-call, and positional syntax instead of dropping values or treating them as flag handlers.
 - Show the selected `--config` or `MCPORTER_CONFIG` path in configuration diagnostics instead of reporting only default locations.
