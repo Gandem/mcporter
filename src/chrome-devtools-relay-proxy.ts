@@ -8,6 +8,7 @@ const WEBSOCKET_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 
 export interface ChromeDevtoolsRelayProxy {
   readonly endpoint: string;
+  readonly signal: AbortSignal;
   consumeClientAuthorization(): string;
   close(): Promise<void>;
 }
@@ -23,9 +24,31 @@ export async function startChromeDevtoolsRelayProxy(options: {
   const clientAuthorization = `Bearer ${randomBytes(32).toString('base64url')}`;
   let downstreamAccepted = false;
   let closed = false;
+  const lifetime = new AbortController();
+  let closing: Promise<void> | undefined;
   const server = http.createServer((_request, response) => {
     response.writeHead(404, { Connection: 'close', 'Content-Length': '0' }).end();
   });
+  const binding = Promise.withResolvers<void>();
+  const terminate = (reason: 'upstream' | 'downstream' | 'owner'): Promise<void> => {
+    if (closing) return closing;
+    closed = true;
+    // A pending listen can still succeed after termination; settle it before closing the listener.
+    closing = binding.promise.catch(() => {}).then(() => closeServer(server, sockets));
+    lifetime.abort(reason);
+    closeUpstream(options.upstream.socket);
+    for (const socket of sockets) socket.destroy();
+    return closing;
+  };
+  const onUpstreamError = (): void => {
+    void terminate('upstream');
+  };
+  const onUpstreamClose = (): void => {
+    options.upstream.socket.off('error', onUpstreamError);
+    void terminate('upstream');
+  };
+  options.upstream.socket.on('error', onUpstreamError);
+  options.upstream.socket.once('close', onUpstreamClose);
   server.on('connection', (socket) => trackSocket(sockets, socket));
 
   server.on('upgrade', (request, downstream, head) => {
@@ -57,55 +80,46 @@ export async function startChromeDevtoolsRelayProxy(options: {
     );
     if (options.upstream.head.length > 0) downstream.write(options.upstream.head);
     if (head.length > 0) options.upstream.socket.write(head);
-    options.upstream.socket.once('error', () => downstream.destroy());
-    options.upstream.socket.once('close', () => downstream.destroy());
-    downstream.once('error', () => options.upstream.socket.destroy());
-    downstream.once('close', () => options.upstream.socket.destroy());
+    downstream.once('error', () => void terminate('downstream'));
+    downstream.once('close', () => void terminate('downstream'));
     downstream.pipe(options.upstream.socket).pipe(downstream);
     server.close();
   });
 
-  const onUpstreamClose = (): void => {
-    void closeServer(server, sockets);
-  };
-  options.upstream.socket.once('close', onUpstreamClose);
-
+  const onBindError = (error: Error): void => binding.reject(error);
+  server.once('error', onBindError);
   try {
-    await new Promise<void>((resolve, reject) => {
-      const onError = (error: Error): void => reject(error);
-      server.once('error', onError);
-      server.listen(0, '127.0.0.1', () => {
-        server.off('error', onError);
-        resolve();
-      });
+    server.listen(0, '127.0.0.1', () => {
+      server.off('error', onBindError);
+      binding.resolve();
     });
+    await binding.promise;
   } catch (error) {
-    closeUpstream(options.upstream.socket);
+    binding.reject(error);
+    await terminate('owner');
     throw error;
+  }
+  if (closed || options.upstream.socket.destroyed) {
+    await terminate('upstream');
+    throw new Error('Chrome relay connection closed before child handoff.');
   }
 
   const address = server.address() as AddressInfo | null;
   if (!address || address.address !== '127.0.0.1') {
-    closeUpstream(options.upstream.socket);
-    server.close();
+    await terminate('owner');
     throw new Error('Chrome relay proxy failed to bind to IPv4 loopback.');
   }
 
   let authorizationAvailable = true;
   return {
     endpoint: `ws://127.0.0.1:${address.port}/cdp`,
+    signal: lifetime.signal,
     consumeClientAuthorization() {
       if (!authorizationAvailable) throw new Error('Chrome relay authorization handoff already consumed.');
       authorizationAvailable = false;
       return clientAuthorization;
     },
-    async close() {
-      if (closed) return;
-      closed = true;
-      options.upstream.socket.off('close', onUpstreamClose);
-      closeUpstream(options.upstream.socket);
-      await closeServer(server, sockets);
-    },
+    close: () => terminate('owner'),
   };
 }
 
